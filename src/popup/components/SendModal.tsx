@@ -31,13 +31,14 @@ import { ChevronDownIcon } from '@chakra-ui/icons';
 import { useWalletStore } from '@/store/walletStore';
 import { useChainStore } from '@/store/chainStore';
 import { ChainInfo } from '@/types/wallet';
-import { fetchChainAssets, RegistryAsset } from '@/lib/assets/chainRegistry';
+import { fetchManageableAssets, RegistryAsset } from '@/lib/assets/chainRegistry';
 import { simulateSendFee, FeeEstimate } from '@/lib/cosmos/fees';
 import { isValidBitcoinAddress } from '@/lib/crypto/bitcoin';
 import { getBitcoinClient } from '@/lib/bitcoin/client';
 import { isValidEvmAddress } from '@/lib/crypto/evm';
 import { getEvmClient, formatEther } from '@/lib/evm/client';
 import { NetworkType, networkRegistry } from '@/lib/networks';
+import { useNetworkStore } from '@/store/networkStore';
 
 interface SendModalProps {
   isOpen: boolean;
@@ -48,6 +49,7 @@ interface SendModalProps {
   networkType?: NetworkType;
   bitcoinAddress?: string;
   evmAddress?: string;
+  svmAddress?: string;
 }
 
 const SendModal: React.FC<SendModalProps> = ({
@@ -59,6 +61,7 @@ const SendModal: React.FC<SendModalProps> = ({
   networkType = 'cosmos',
   bitcoinAddress = '',
   evmAddress = '',
+  svmAddress = '',
 }) => {
   const { selectedAccount, sendTokens, getAddressForChain } = useWalletStore();
   const { getBalance, fetchBalance } = useChainStore();
@@ -78,6 +81,7 @@ const SendModal: React.FC<SendModalProps> = ({
 
   const isBitcoin = networkType === 'bitcoin';
   const isEvm = networkType === 'evm';
+  const isSvm = networkType === 'svm';
   const addressPrefix = chainConfig?.bech32Config.bech32PrefixAccAddr || 'bze';
 
   // Get network config from registry for UTXO/EVM chains
@@ -86,6 +90,7 @@ const SendModal: React.FC<SendModalProps> = ({
   // Get network-specific address placeholder
   const getAddressPlaceholder = (): string => {
     if (isEvm) return '0x...';
+    if (isSvm) return '...';
     if (!isBitcoin) return `${addressPrefix}1...`; // Cosmos
 
     // UTXO chains - check address type from network config
@@ -118,14 +123,16 @@ const SendModal: React.FC<SendModalProps> = ({
 
   const addressPlaceholder = getAddressPlaceholder();
   const nativeSymbol = networkConfig?.symbol || (isBitcoin ? 'BTC' : isEvm ? 'ETH' : 'BZE');
-  const nativeDecimals = networkConfig?.decimals || (isBitcoin ? 8 : isEvm ? 18 : 6);
+  const nativeDecimals = networkConfig?.decimals || (isBitcoin ? 8 : isEvm ? 18 : isSvm ? 9 : 6);
 
   // Get the correct address for this chain
   const chainAddress = isBitcoin
     ? bitcoinAddress
     : isEvm
-    ? evmAddress
-    : getAddressForChain(addressPrefix) || '';
+      ? evmAddress
+      : isSvm
+        ? svmAddress
+        : getAddressForChain(addressPrefix) || '';
 
   // Get current balance for this chain
   const balance = chainAddress ? getBalance(chainId, chainAddress) : undefined;
@@ -135,7 +142,7 @@ const SendModal: React.FC<SendModalProps> = ({
     const loadAssets = async () => {
       setLoadingAssets(true);
       try {
-        const assets = await fetchChainAssets(chainId);
+        const assets = await fetchManageableAssets(chainId);
         setRegistryAssets(assets);
       } catch (error) {
         console.error('Failed to fetch chain registry assets:', error);
@@ -322,11 +329,21 @@ const SendModal: React.FC<SendModalProps> = ({
       const nativeBalance = balance?.find((b) => b.denom === nativeDenom || b.denom === 'sat');
       return [{ denom: nativeDenom, amount: nativeBalance?.amount || '0' }];
     }
-    if (isEvm) {
-      // EVM chains always show native asset
-      const nativeDenom = registryAssets.length > 0 ? registryAssets[0].denom : 'wei';
-      const nativeBalance = balance?.find((b) => b.denom === nativeDenom || b.denom === 'wei');
-      return [{ denom: nativeDenom, amount: nativeBalance?.amount || '0' }];
+    if (isEvm || isSvm) {
+      const { isAssetEnabled } = useNetworkStore.getState();
+      const nativeDenom =
+        registryAssets.length > 0 ? registryAssets[0].denom : isSvm ? 'lamports' : 'wei';
+      const nativeBalance = balance?.find(
+        (b) => b.denom === nativeDenom || b.denom === 'wei' || b.denom === 'lamports'
+      );
+
+      const enabledNonNative =
+        balance
+          ?.filter((b) => b.denom !== nativeDenom)
+          .filter((b) => isAssetEnabled(chainId, b.denom))
+          .filter((b) => parseInt(b.amount) > 0) || [];
+
+      return [{ denom: nativeDenom, amount: nativeBalance?.amount || '0' }, ...enabledNonNative];
     }
     // Cosmos: filter to tokens with balance > 0
     return balance?.filter((b) => parseInt(b.amount) > 0) || [];
@@ -358,7 +375,7 @@ const SendModal: React.FC<SendModalProps> = ({
   // Auto-select native token for Bitcoin/EVM, or first token with balance for Cosmos
   useEffect(() => {
     if (!selectedDenom || selectedDenom === 'sat' || selectedDenom === 'wei') {
-      if (isBitcoin || isEvm) {
+      if (isBitcoin || isEvm || isSvm) {
         // Use first registry asset denom for UTXO/EVM chains
         if (registryAssets.length > 0) {
           setSelectedDenom(registryAssets[0].denom);
@@ -369,7 +386,7 @@ const SendModal: React.FC<SendModalProps> = ({
         setSelectedDenom(tokensWithBalance[0].denom);
       }
     }
-  }, [tokensWithBalance, selectedDenom, isBitcoin, isEvm, registryAssets]);
+  }, [tokensWithBalance, selectedDenom, isBitcoin, isEvm, isSvm, registryAssets]);
 
   const validateAddress = (address: string): boolean => {
     if (isBitcoin) {
@@ -378,6 +395,12 @@ const SendModal: React.FC<SendModalProps> = ({
     }
     if (isEvm) {
       return isValidEvmAddress(address);
+    }
+    if (isSvm) {
+      // Basic base58 check for Solana-style addresses
+      return (
+        /^[1-9A-HJ-NP-Za-km-z]+$/.test(address) && address.length >= 32 && address.length <= 44
+      );
     }
     return address.startsWith(addressPrefix) && address.length >= 39;
   };
@@ -419,8 +442,8 @@ const SendModal: React.FC<SendModalProps> = ({
         description: isBitcoin
           ? 'Enter a valid Bitcoin address'
           : isEvm
-          ? 'Enter a valid Ethereum address (0x...)'
-          : `Address must start with "${addressPrefix}"`,
+            ? 'Enter a valid Ethereum address (0x...)'
+            : `Address must start with "${addressPrefix}"`,
         status: 'error',
         duration: 3000,
       });
@@ -522,8 +545,8 @@ const SendModal: React.FC<SendModalProps> = ({
   const feeDisplay = isBitcoin
     ? estimatedFee?.formatted || `~0.0001 ${nativeSymbol}`
     : isEvm
-    ? estimatedFee?.formatted || `~0.0001 ${nativeSymbol}`
-    : estimatedFee?.formatted || `~0.001 ${feeToken?.coinDenom || 'BZE'}`;
+      ? estimatedFee?.formatted || `~0.0001 ${nativeSymbol}`
+      : estimatedFee?.formatted || `~0.001 ${feeToken?.coinDenom || 'BZE'}`;
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} isCentered size="md">

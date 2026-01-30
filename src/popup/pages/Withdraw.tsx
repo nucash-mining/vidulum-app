@@ -39,6 +39,7 @@ const DEFAULT_WITHDRAW_NETWORK = 'base-mainnet';
 
 // MoonPay API Key (must be provided via VITE_MOONPAY_API_KEY; empty string disables MoonPay)
 const MOONPAY_API_KEY = import.meta.env.VITE_MOONPAY_API_KEY ?? '';
+const VITE_MOONPAY_ENV = import.meta.env.VITE_MOONPAY_ENV ?? 'sandbox';
 
 interface WithdrawProps {
   onBack: () => void;
@@ -118,13 +119,13 @@ const Withdraw: React.FC<WithdrawProps> = ({ onBack }) => {
 
   // Build MoonPay Sell URL for external link fallback
   const buildMoonPaySellUrl = () => {
-    const baseUrl = 'https://sell.moonpay.com';
+    const baseUrl = 'https://sell-sandbox.moonpay.com';
     const params = new URLSearchParams({
       apiKey: MOONPAY_API_KEY,
       baseCurrencyCode: cryptoCode,
       refundWalletAddress: walletAddress,
-      colorCode: 'F97316',
-      theme: 'dark',
+      // colorCode: 'F97316',
+      // theme: 'dark',
       language: 'en',
     });
     return `${baseUrl}?${params.toString()}`;

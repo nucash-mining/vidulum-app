@@ -19,76 +19,6 @@ const VIDULUM_RESPONSE = 'VIDULUM_RESPONSE';
 const SETTINGS_KEY = 'vidulum_settings';
 
 // ============================================================================
-// Inject the inpage provider script
-// ============================================================================
-
-async function injectScript() {
-  try {
-    // Read user settings from chrome.storage
-    let enableKeplrInjection = false; // Default: disabled
-    let enableMetamaskInjection = false; // Default: disabled
-    let enablePhantomInjection = false; // Default: disabled
-    let enableCoinbaseInjection = false; // Default: disabled
-    let features = {
-      VIDULUM_INJECTION: true, // Default
-      WALLET_CONNECT: false, // Default
-      AUTO_OPEN_POPUP: true, // Default
-      TX_TRANSLATION: true, // Default
-    };
-
-    try {
-      const result = await browser.storage.local.get(SETTINGS_KEY);
-      const settings = result[SETTINGS_KEY] || {};
-      enableKeplrInjection = settings.enableKeplrInjection ?? false;
-      enableMetamaskInjection = settings.enableMetamaskInjection ?? false;
-      enablePhantomInjection = settings.enablePhantomInjection ?? false;
-      enableCoinbaseInjection = settings.enableCoinbaseInjection ?? false;
-
-      // Load feature settings
-      if (settings.features) {
-        features = {
-          VIDULUM_INJECTION: settings.features.VIDULUM_INJECTION ?? true,
-          WALLET_CONNECT: settings.features.WALLET_CONNECT ?? false,
-          AUTO_OPEN_POPUP: settings.features.AUTO_OPEN_POPUP ?? true,
-          TX_TRANSLATION: settings.features.TX_TRANSLATION ?? true,
-        };
-      }
-    } catch (error) {
-      // Storage access failed, use default
-      console.error('[Vidulum] Failed to read settings from storage, using defaults:', error);
-    }
-
-    // Create a config element to pass settings to inpage script
-    const configElement = document.createElement('script');
-    configElement.id = 'vidulum-config';
-    configElement.type = 'application/json';
-    configElement.textContent = JSON.stringify({
-      enableKeplrInjection,
-      enableMetamaskInjection,
-      enablePhantomInjection,
-      enableCoinbaseInjection,
-      features,
-    });
-    (document.head || document.documentElement).appendChild(configElement);
-
-    // Inject the main inpage script
-    const script = document.createElement('script');
-    script.src = browser.runtime.getURL('inpage.js');
-    script.type = 'text/javascript';
-    script.onload = () => {
-      script.remove(); // Clean up after injection
-      configElement.remove(); // Clean up config element
-    };
-    (document.head || document.documentElement).appendChild(script);
-  } catch (error) {
-    console.error('[Vidulum] Failed to inject provider script:', error);
-  }
-}
-
-// Inject as early as possible
-injectScript();
-
-// ============================================================================
 // Message Bridge: Page ↔ Background
 // ============================================================================
 
@@ -143,6 +73,45 @@ window.addEventListener('message', async (event) => {
   if (event.data?.type !== VIDULUM_REQUEST) return;
 
   const { id, method, params } = event.data;
+
+  // Special-case: the MAIN-world provider cannot access extension storage.
+  // Provide settings/config via the bridge so it can decide what to expose.
+  if (method === 'vidulum_getConfig') {
+    try {
+      const result = await browser.storage.local.get(SETTINGS_KEY);
+      const settings = result[SETTINGS_KEY] || {};
+
+      window.postMessage(
+        {
+          type: VIDULUM_RESPONSE,
+          id,
+          result: {
+            enableKeplrInjection: settings.enableKeplrInjection ?? false,
+            enableMetamaskInjection: settings.enableMetamaskInjection ?? false,
+            enablePhantomInjection: settings.enablePhantomInjection ?? false,
+            enableCoinbaseInjection: settings.enableCoinbaseInjection ?? false,
+            features: {
+              VIDULUM_INJECTION: settings.features?.VIDULUM_INJECTION ?? true,
+              WALLET_CONNECT: settings.features?.WALLET_CONNECT ?? false,
+              AUTO_OPEN_POPUP: settings.features?.AUTO_OPEN_POPUP ?? true,
+              TX_TRANSLATION: settings.features?.TX_TRANSLATION ?? true,
+            },
+          },
+        },
+        '*'
+      );
+    } catch (error) {
+      window.postMessage(
+        {
+          type: VIDULUM_RESPONSE,
+          id,
+          error: error instanceof Error ? error.message : 'Failed to load config',
+        },
+        '*'
+      );
+    }
+    return;
+  }
 
   try {
     const messageType = methodToMessageType[method];
@@ -205,3 +174,7 @@ browser.runtime.onMessage.addListener((message) => {
     window.dispatchEvent(new Event('keplr_keystorechange'));
   }
 });
+
+// Signal to the MAIN-world inpage provider that the bridge is ready.
+// This prevents a race where inpage posts a config request before this listener is attached.
+window.postMessage({ type: 'VIDULUM_BRIDGE_READY' }, '*');

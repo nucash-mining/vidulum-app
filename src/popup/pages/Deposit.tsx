@@ -65,6 +65,7 @@ const DEFAULT_DEPOSIT_NETWORK = 'base-mainnet';
 
 // MoonPay API Key (must be provided via VITE_MOONPAY_API_KEY; empty string disables MoonPay)
 const MOONPAY_API_KEY = import.meta.env.VITE_MOONPAY_API_KEY ?? '';
+const VITE_MOONPAY_ENV = import.meta.env.VITE_MOONPAY_ENV ?? 'sandbox';
 
 interface DepositProps {
   onBack: () => void;
@@ -151,13 +152,13 @@ const Deposit: React.FC<DepositProps> = ({ onBack }) => {
 
   // Build MoonPay URL for external link fallback
   const buildMoonPayUrl = () => {
-    const baseUrl = 'https://buy.moonpay.com';
+    const baseUrl = 'https://buy-sandbox.moonpay.com';
     const params = new URLSearchParams({
       apiKey: MOONPAY_API_KEY,
       currencyCode: cryptoCode,
       walletAddress: walletAddress,
-      colorCode: '14B8A6',
-      theme: 'dark',
+      // colorCode: '14B8A6',
+      // theme: 'dark',
       language: 'en',
     });
     return `${baseUrl}?${params.toString()}`;

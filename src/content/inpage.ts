@@ -9,9 +9,10 @@
  */
 
 // ============================================================================
-// Feature Flags (read from config element injected by content script)
+// Feature Flags (read from content-script bridge)
 // ============================================================================
-function readConfig(): {
+
+type ProviderConfig = {
   enableKeplrInjection: boolean;
   enableMetamaskInjection: boolean;
   enablePhantomInjection: boolean;
@@ -22,66 +23,50 @@ function readConfig(): {
     AUTO_OPEN_POPUP?: boolean;
     TX_TRANSLATION?: boolean;
   };
-} {
-  try {
-    const configElement = document.getElementById('vidulum-config');
-    if (configElement && configElement.textContent) {
-      return JSON.parse(configElement.textContent);
-    }
-  } catch {
-    // Config parsing failed, use defaults
-  }
+};
+
+const DEFAULT_CONFIG: ProviderConfig = {
+  enableKeplrInjection: false,
+  enableMetamaskInjection: false,
+  enablePhantomInjection: false,
+  enableCoinbaseInjection: false,
+  features: {
+    VIDULUM_INJECTION: true,
+    WALLET_CONNECT: false,
+    AUTO_OPEN_POPUP: true,
+    TX_TRANSLATION: true,
+  },
+};
+
+function featuresFromConfig(config: ProviderConfig) {
   return {
-    enableKeplrInjection: false,
-    enableMetamaskInjection: false,
-    enablePhantomInjection: false,
-    enableCoinbaseInjection: false,
-    features: {
-      VIDULUM_INJECTION: true,
-      WALLET_CONNECT: false,
-      AUTO_OPEN_POPUP: true,
-      TX_TRANSLATION: true,
-    },
+    KEPLR_INJECTION: config.enableKeplrInjection,
+    METAMASK_INJECTION: config.enableMetamaskInjection,
+    PHANTOM_INJECTION: config.enablePhantomInjection,
+    COINBASE_INJECTION: config.enableCoinbaseInjection,
+    VIDULUM_INJECTION: config.features?.VIDULUM_INJECTION ?? true,
+    WALLET_CONNECT: config.features?.WALLET_CONNECT ?? false,
+    AUTO_OPEN_POPUP: config.features?.AUTO_OPEN_POPUP ?? true,
+    TX_TRANSLATION: config.features?.TX_TRANSLATION ?? true,
   };
 }
-
-const CONFIG = readConfig();
-
-const FEATURES = {
-  // User-configurable: Enable window.keplr injection (Keplr replacement mode)
-  KEPLR_INJECTION: CONFIG.enableKeplrInjection,
-
-  // User-configurable: Enable window.ethereum injection (Metamask replacement mode)
-  METAMASK_INJECTION: CONFIG.enableMetamaskInjection,
-
-  // User-configurable: Enable window.solana injection (Phantom replacement mode)
-  PHANTOM_INJECTION: CONFIG.enablePhantomInjection,
-
-  // User-configurable: Enable Coinbase Wallet injection
-  COINBASE_INJECTION: CONFIG.enableCoinbaseInjection,
-
-  // User-configurable: Inject window.vidulum for apps that specifically support Vidulum
-  VIDULUM_INJECTION: CONFIG.features?.VIDULUM_INJECTION ?? true,
-
-  // User-configurable: WalletConnect support
-  WALLET_CONNECT: CONFIG.features?.WALLET_CONNECT ?? false,
-
-  // User-configurable: Auto-open popup on approval requests
-  AUTO_OPEN_POPUP: CONFIG.features?.AUTO_OPEN_POPUP ?? true,
-
-  // User-configurable: Human-readable transaction display
-  TX_TRANSLATION: CONFIG.features?.TX_TRANSLATION ?? true,
-};
 
 // Message types for communication with content script
 const VIDULUM_REQUEST = 'VIDULUM_REQUEST';
 const VIDULUM_RESPONSE = 'VIDULUM_RESPONSE';
+const VIDULUM_BRIDGE_READY = 'VIDULUM_BRIDGE_READY';
 
 // Pending requests waiting for responses
 const pendingRequests = new Map<
   string,
-  { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  { resolve: (value: unknown) => void; reject: (error: Error) => void; timeoutId: number }
 >();
+
+let bridgeReady = false;
+let resolveBridgeReady: (() => void) | null = null;
+const bridgeReadyPromise = new Promise<void>((resolve) => {
+  resolveBridgeReady = resolve;
+});
 
 // Generate unique request IDs
 let requestId = 0;
@@ -90,11 +75,22 @@ function generateRequestId(): string {
 }
 
 // Send request to content script and wait for response
-function sendRequest(method: string, params: unknown = {}): Promise<unknown> {
+function sendRequest(
+  method: string,
+  params: unknown = {},
+  timeoutMs = 5 * 60 * 1000
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = generateRequestId();
 
-    pendingRequests.set(id, { resolve, reject });
+    const timeoutId = window.setTimeout(() => {
+      const pending = pendingRequests.get(id);
+      if (!pending) return;
+      pendingRequests.delete(id);
+      reject(new Error('Request timed out'));
+    }, timeoutMs);
+
+    pendingRequests.set(id, { resolve, reject, timeoutId });
 
     window.postMessage(
       {
@@ -105,23 +101,52 @@ function sendRequest(method: string, params: unknown = {}): Promise<unknown> {
       },
       '*'
     );
-
-    // Timeout after 5 minutes (for user approval flows)
-    setTimeout(
-      () => {
-        if (pendingRequests.has(id)) {
-          pendingRequests.delete(id);
-          reject(new Error('Request timed out'));
-        }
-      },
-      5 * 60 * 1000
-    );
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForBridgeReady(timeoutMs = 750): Promise<void> {
+  if (bridgeReady) return;
+  await Promise.race([bridgeReadyPromise, sleep(timeoutMs)]);
+}
+
+async function loadProviderConfig(): Promise<ProviderConfig> {
+  // The bridge (content.js) may attach its message listener slightly after this
+  // MAIN-world script runs at document_start. Wait briefly for readiness, then
+  // retry config fetch with short timeouts to avoid getting stuck forever.
+  await waitForBridgeReady();
+
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try {
+      const cfg = (await sendRequest('vidulum_getConfig', {}, 500)) as ProviderConfig;
+      return {
+        ...DEFAULT_CONFIG,
+        ...cfg,
+        features: { ...DEFAULT_CONFIG.features, ...(cfg.features || {}) },
+      };
+    } catch {
+      await sleep(100);
+    }
+  }
+
+  return DEFAULT_CONFIG;
 }
 
 // Listen for responses from content script
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
+
+  if (event.data?.type === VIDULUM_BRIDGE_READY) {
+    bridgeReady = true;
+    resolveBridgeReady?.();
+    resolveBridgeReady = null;
+    return;
+  }
+
   if (event.data?.type !== VIDULUM_RESPONSE) return;
 
   const { id, result, error } = event.data;
@@ -130,6 +155,7 @@ window.addEventListener('message', (event) => {
   if (!pending) return;
 
   pendingRequests.delete(id);
+  clearTimeout(pending.timeoutId);
 
   if (error) {
     pending.reject(new Error(error));
@@ -405,633 +431,641 @@ const keplr = {
   mode: 'extension' as const,
 };
 
-// ============================================================================
-// Expose to window
-// ============================================================================
+// Providers are exposed after config loads.
+// This avoids CSP-sensitive DOM injection tricks and ensures the wallet mode toggles
+// in Settings are respected.
+(async () => {
+  const CONFIG = await loadProviderConfig();
+  const FEATURES = featuresFromConfig(CONFIG);
 
-// Conditionally expose as window.keplr for Keplr compatibility
-// Disabled by default to avoid conflicts with actual Keplr extension
-if (FEATURES.KEPLR_INJECTION) {
-  Object.defineProperty(window, 'keplr', {
-    value: keplr,
-    writable: false,
-    configurable: false,
-  });
+  // ============================================================================
+  // Expose to window
+  // ============================================================================
 
-  // Expose getOfflineSigner globally (some dApps expect this)
-  Object.defineProperty(window, 'getOfflineSigner', {
-    value: keplr.getOfflineSigner.bind(keplr),
-    writable: false,
-    configurable: false,
-  });
+  // Conditionally expose as window.keplr for Keplr compatibility
+  // Disabled by default to avoid conflicts with actual Keplr extension
+  if (FEATURES.KEPLR_INJECTION) {
+    Object.defineProperty(window, 'keplr', {
+      value: keplr,
+      writable: false,
+      configurable: false,
+    });
 
-  Object.defineProperty(window, 'getOfflineSignerOnlyAmino', {
-    value: keplr.getOfflineSignerOnlyAmino.bind(keplr),
-    writable: false,
-    configurable: false,
-  });
+    // Expose getOfflineSigner globally (some dApps expect this)
+    Object.defineProperty(window, 'getOfflineSigner', {
+      value: keplr.getOfflineSigner.bind(keplr),
+      writable: false,
+      configurable: false,
+    });
 
-  Object.defineProperty(window, 'getOfflineSignerAuto', {
-    value: keplr.getOfflineSignerAuto.bind(keplr),
-    writable: false,
-    configurable: false,
-  });
+    Object.defineProperty(window, 'getOfflineSignerOnlyAmino', {
+      value: keplr.getOfflineSignerOnlyAmino.bind(keplr),
+      writable: false,
+      configurable: false,
+    });
 
-  // Dispatch event to notify dApps that wallet is ready
-  window.dispatchEvent(new Event('keplr_keystorechange'));
-}
+    Object.defineProperty(window, 'getOfflineSignerAuto', {
+      value: keplr.getOfflineSignerAuto.bind(keplr),
+      writable: false,
+      configurable: false,
+    });
 
-// Always expose as window.vidulum for apps that specifically support Vidulum
-if (FEATURES.VIDULUM_INJECTION) {
-  Object.defineProperty(window, 'vidulum', {
-    value: keplr,
-    writable: false,
-    configurable: false,
-  });
+    // Dispatch event to notify dApps that wallet is ready
+    window.dispatchEvent(new Event('keplr_keystorechange'));
+  }
 
-  // Dispatch Vidulum-specific ready event
-  window.dispatchEvent(new Event('vidulum_ready'));
-}
+  // Always expose as window.vidulum for apps that specifically support Vidulum
+  if (FEATURES.VIDULUM_INJECTION) {
+    Object.defineProperty(window, 'vidulum', {
+      value: keplr,
+      writable: false,
+      configurable: false,
+    });
 
-// ============================================================================
-// Metamask-compatible EIP-1193 Provider
-// ============================================================================
+    // Dispatch Vidulum-specific ready event
+    window.dispatchEvent(new Event('vidulum_ready'));
+  }
 
-if (FEATURES.METAMASK_INJECTION) {
-  // EIP-1193 Provider
-  class EthereumProvider {
-    readonly isMetaMask = true;
-    readonly isVidulum = true;
-    readonly _vidulum = true;
+  // ============================================================================
+  // Metamask-compatible EIP-1193 Provider
+  // ============================================================================
 
-    // Metamask chainId format (hex string)
-    chainId: string | null = null;
-    selectedAddress: string | null = null;
+  if (FEATURES.METAMASK_INJECTION) {
+    // EIP-1193 Provider
+    class EthereumProvider {
+      readonly isMetaMask = true;
+      readonly isVidulum = true;
+      readonly _vidulum = true;
 
-    // Event listeners
-    private eventListeners: Map<string, Set<Function>> = new Map();
+      // Metamask chainId format (hex string)
+      chainId: string | null = null;
+      selectedAddress: string | null = null;
 
-    constructor() {
-      // Initialize with Ethereum Mainnet (0x1)
-      this.chainId = '0x1';
-    }
+      // Event listeners
+      private eventListeners: Map<string, Set<Function>> = new Map();
 
-    // EIP-1193 request method
-    async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
-      const { method, params = [] } = args;
+      constructor() {
+        // Initialize with Ethereum Mainnet (0x1)
+        this.chainId = '0x1';
+      }
 
-      switch (method) {
-        case 'eth_requestAccounts':
-        case 'eth_accounts': {
-          try {
-            // Request EVM account from Vidulum
-            const result = await sendRequest('eth_requestAccounts', {});
-            const accounts = result as string[];
-            if (accounts.length > 0) {
-              this.selectedAddress = accounts[0];
+      // EIP-1193 request method
+      async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
+        const { method, params = [] } = args;
+
+        switch (method) {
+          case 'eth_requestAccounts':
+          case 'eth_accounts': {
+            try {
+              // Request EVM account from Vidulum
+              const result = await sendRequest('eth_requestAccounts', {});
+              const accounts = result as string[];
+              if (accounts.length > 0) {
+                this.selectedAddress = accounts[0];
+              }
+              return accounts;
+            } catch (error) {
+              throw new Error('User rejected the request');
             }
-            return accounts;
-          } catch (error) {
-            throw new Error('User rejected the request');
           }
-        }
 
-        case 'eth_chainId': {
-          return this.chainId || '0x1';
-        }
+          case 'eth_chainId': {
+            return this.chainId || '0x1';
+          }
 
-        case 'net_version': {
-          // Return decimal chainId
-          const chainIdHex = this.chainId || '0x1';
-          return parseInt(chainIdHex, 16).toString();
-        }
+          case 'net_version': {
+            // Return decimal chainId
+            const chainIdHex = this.chainId || '0x1';
+            return parseInt(chainIdHex, 16).toString();
+          }
 
-        case 'eth_getBalance':
-        case 'eth_blockNumber':
-        case 'eth_getBlockByNumber':
-        case 'eth_getTransactionByHash':
-        case 'eth_getTransactionReceipt':
-        case 'eth_call':
-        case 'eth_estimateGas':
-        case 'eth_gasPrice':
-        case 'eth_maxPriorityFeePerGas':
-        case 'eth_feeHistory': {
-          // Forward read-only RPC calls to background
-          return sendRequest(method, { params });
-        }
+          case 'eth_getBalance':
+          case 'eth_blockNumber':
+          case 'eth_getBlockByNumber':
+          case 'eth_getTransactionByHash':
+          case 'eth_getTransactionReceipt':
+          case 'eth_call':
+          case 'eth_estimateGas':
+          case 'eth_gasPrice':
+          case 'eth_maxPriorityFeePerGas':
+          case 'eth_feeHistory': {
+            // Forward read-only RPC calls to background
+            return sendRequest(method, { params });
+          }
 
-        case 'eth_sendTransaction': {
-          // Request user approval for transaction
-          return sendRequest('eth_sendTransaction', { params: params[0] });
-        }
+          case 'eth_sendTransaction': {
+            // Request user approval for transaction
+            return sendRequest('eth_sendTransaction', { params: params[0] });
+          }
 
-        case 'eth_signTransaction': {
-          return sendRequest('eth_signTransaction', { params: params[0] });
-        }
+          case 'eth_signTransaction': {
+            return sendRequest('eth_signTransaction', { params: params[0] });
+          }
 
-        case 'personal_sign': {
-          // personal_sign(message, account)
-          return sendRequest('personal_sign', { message: params[0], account: params[1] });
-        }
+          case 'personal_sign': {
+            // personal_sign(message, account)
+            return sendRequest('personal_sign', { message: params[0], account: params[1] });
+          }
 
-        case 'eth_sign': {
-          // eth_sign(account, message)
-          return sendRequest('eth_sign', { account: params[0], message: params[1] });
-        }
+          case 'eth_sign': {
+            // eth_sign(account, message)
+            return sendRequest('eth_sign', { account: params[0], message: params[1] });
+          }
 
-        case 'eth_signTypedData':
-        case 'eth_signTypedData_v3':
-        case 'eth_signTypedData_v4': {
-          return sendRequest(method, { account: params[0], data: params[1] });
-        }
+          case 'eth_signTypedData':
+          case 'eth_signTypedData_v3':
+          case 'eth_signTypedData_v4': {
+            return sendRequest(method, { account: params[0], data: params[1] });
+          }
 
-        case 'wallet_switchEthereumChain': {
-          const chainIdParam = (params[0] as { chainId: string })?.chainId;
-          if (chainIdParam) {
-            this.chainId = chainIdParam;
-            this.emit('chainChanged', chainIdParam);
+          case 'wallet_switchEthereumChain': {
+            const chainIdParam = (params[0] as { chainId: string })?.chainId;
+            if (chainIdParam) {
+              this.chainId = chainIdParam;
+              this.emit('chainChanged', chainIdParam);
+              return null;
+            }
+            throw new Error('Invalid chainId');
+          }
+
+          case 'wallet_addEthereumChain': {
+            // Request to add a custom network
+            await sendRequest('wallet_addEthereumChain', { params: params[0] });
             return null;
           }
-          throw new Error('Invalid chainId');
-        }
 
-        case 'wallet_addEthereumChain': {
-          // Request to add a custom network
-          await sendRequest('wallet_addEthereumChain', { params: params[0] });
-          return null;
-        }
-
-        case 'wallet_watchAsset': {
-          // Request to add a token
-          await sendRequest('wallet_watchAsset', { params: params[0] });
-          return true;
-        }
-
-        default:
-          throw new Error(`Method ${method} not supported`);
-      }
-    }
-
-    // Legacy send methods for older dApps
-    send(
-      methodOrPayload: string | { method: string; params?: unknown[] },
-      paramsOrCallback?: unknown[] | Function
-    ): unknown {
-      // Handle different send signatures
-      if (typeof methodOrPayload === 'string') {
-        // send(method, params) - synchronous (deprecated)
-        return this.request({ method: methodOrPayload, params: paramsOrCallback as unknown[] });
-      } else if (typeof paramsOrCallback === 'function') {
-        // send(payload, callback) - async callback style (deprecated)
-        this.request(methodOrPayload)
-          .then((result) => (paramsOrCallback as Function)(null, { result }))
-          .catch((error) => (paramsOrCallback as Function)(error));
-        return undefined;
-      } else {
-        // send(payload) - promise style (use request instead)
-        return this.request(methodOrPayload);
-      }
-    }
-
-    // Legacy sendAsync for older dApps
-    sendAsync(
-      payload: { method: string; params?: unknown[] },
-      callback: (error: Error | null, response?: { result: unknown }) => void
-    ): void {
-      this.request(payload)
-        .then((result) => callback(null, { result }))
-        .catch((error) => callback(error));
-    }
-
-    // Event emitter methods
-    on(event: string, listener: Function): void {
-      if (!this.eventListeners.has(event)) {
-        this.eventListeners.set(event, new Set());
-      }
-      this.eventListeners.get(event)!.add(listener);
-    }
-
-    removeListener(event: string, listener: Function): void {
-      const listeners = this.eventListeners.get(event);
-      if (listeners) {
-        listeners.delete(listener);
-      }
-    }
-
-    emit(event: string, ...args: unknown[]): void {
-      const listeners = this.eventListeners.get(event);
-      if (listeners) {
-        listeners.forEach((listener) => {
-          try {
-            listener(...args);
-          } catch (error) {
-            console.error('[Vidulum] Error in event listener:', error);
+          case 'wallet_watchAsset': {
+            // Request to add a token
+            await sendRequest('wallet_watchAsset', { params: params[0] });
+            return true;
           }
-        });
-      }
-    }
 
-    // Convenience methods
-    enable(): Promise<string[]> {
-      return this.request({ method: 'eth_requestAccounts' }) as Promise<string[]>;
-    }
-
-    // Check if connected
-    isConnected(): boolean {
-      return true;
-    }
-  }
-
-  const ethereum = new EthereumProvider();
-
-  // Expose as window.ethereum
-  Object.defineProperty(window, 'ethereum', {
-    get() {
-      return ethereum;
-    },
-    set() {
-      // Prevent overwriting
-    },
-    configurable: false,
-  });
-
-  // Dispatch ethereum#initialized event (EIP-6963)
-  window.dispatchEvent(new Event('ethereum#initialized'));
-}
-
-// ============================================================================
-// Phantom-compatible Solana Provider
-// ============================================================================
-
-if (FEATURES.PHANTOM_INJECTION) {
-  // Solana Provider
-  class SolanaProvider {
-    readonly isPhantom = true;
-    readonly isVidulum = true;
-    readonly _vidulum = true;
-
-    publicKey: { toBase58: () => string } | null = null;
-    isConnected = false;
-
-    // Event listeners
-    private eventListeners: Map<string, Set<Function>> = new Map();
-
-    constructor() {
-      // Initialize
-    }
-
-    // Connect to wallet
-    async connect(options?: {
-      onlyIfTrusted?: boolean;
-    }): Promise<{ publicKey: { toBase58: () => string } }> {
-      try {
-        if (options?.onlyIfTrusted && !this.isConnected) {
-          throw new Error('User not trusted');
+          default:
+            throw new Error(`Method ${method} not supported`);
         }
-
-        const result = (await sendRequest('sol_connect', {})) as { publicKey: string };
-
-        this.publicKey = {
-          toBase58: () => result.publicKey,
-        };
-        this.isConnected = true;
-        this.emit('connect', this.publicKey);
-
-        return { publicKey: this.publicKey };
-      } catch (error) {
-        throw new Error('User rejected the request');
       }
-    }
 
-    // Disconnect from wallet
-    async disconnect(): Promise<void> {
-      await sendRequest('sol_disconnect', {});
-      this.publicKey = null;
-      this.isConnected = false;
-      this.emit('disconnect');
-    }
-
-    // Sign a transaction
-    async signTransaction(transaction: unknown): Promise<unknown> {
-      if (!this.isConnected) {
-        throw new Error('Wallet not connected');
+      // Legacy send methods for older dApps
+      send(
+        methodOrPayload: string | { method: string; params?: unknown[] },
+        paramsOrCallback?: unknown[] | Function
+      ): unknown {
+        // Handle different send signatures
+        if (typeof methodOrPayload === 'string') {
+          // send(method, params) - synchronous (deprecated)
+          return this.request({ method: methodOrPayload, params: paramsOrCallback as unknown[] });
+        } else if (typeof paramsOrCallback === 'function') {
+          // send(payload, callback) - async callback style (deprecated)
+          this.request(methodOrPayload)
+            .then((result) => (paramsOrCallback as Function)(null, { result }))
+            .catch((error) => (paramsOrCallback as Function)(error));
+          return undefined;
+        } else {
+          // send(payload) - promise style (use request instead)
+          return this.request(methodOrPayload);
+        }
       }
-      return sendRequest('sol_signTransaction', { transaction });
-    }
 
-    // Sign multiple transactions
-    async signAllTransactions(transactions: unknown[]): Promise<unknown[]> {
-      if (!this.isConnected) {
-        throw new Error('Wallet not connected');
+      // Legacy sendAsync for older dApps
+      sendAsync(
+        payload: { method: string; params?: unknown[] },
+        callback: (error: Error | null, response?: { result: unknown }) => void
+      ): void {
+        this.request(payload)
+          .then((result) => callback(null, { result }))
+          .catch((error) => callback(error));
       }
-      return sendRequest('sol_signAllTransactions', { transactions }) as Promise<unknown[]>;
-    }
 
-    // Sign a message
-    async signMessage(
-      message: Uint8Array,
-      display?: string
-    ): Promise<{ signature: Uint8Array; publicKey: { toBase58: () => string } }> {
-      if (!this.isConnected) {
-        throw new Error('Wallet not connected');
+      // Event emitter methods
+      on(event: string, listener: Function): void {
+        if (!this.eventListeners.has(event)) {
+          this.eventListeners.set(event, new Set());
+        }
+        this.eventListeners.get(event)!.add(listener);
       }
-      const result = (await sendRequest('sol_signMessage', {
-        message: Array.from(message),
-        display,
-      })) as { signature: number[]; publicKey: string };
 
-      return {
-        signature: new Uint8Array(result.signature),
-        publicKey: {
-          toBase58: () => result.publicKey,
-        },
-      };
-    }
-
-    // Sign and send transaction
-    async signAndSendTransaction(
-      transaction: unknown,
-      options?: unknown
-    ): Promise<{ signature: string }> {
-      if (!this.isConnected) {
-        throw new Error('Wallet not connected');
+      removeListener(event: string, listener: Function): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+          listeners.delete(listener);
+        }
       }
-      return sendRequest('sol_signAndSendTransaction', { transaction, options }) as Promise<{
-        signature: string;
-      }>;
-    }
 
-    // Event emitter methods
-    on(event: string, listener: Function): void {
-      if (!this.eventListeners.has(event)) {
-        this.eventListeners.set(event, new Set());
-      }
-      this.eventListeners.get(event)!.add(listener);
-    }
-
-    removeListener(event: string, listener: Function): void {
-      const listeners = this.eventListeners.get(event);
-      if (listeners) {
-        listeners.delete(listener);
-      }
-    }
-
-    emit(event: string, ...args: unknown[]): void {
-      const listeners = this.eventListeners.get(event);
-      if (listeners) {
-        listeners.forEach((listener) => {
-          try {
-            listener(...args);
-          } catch (error) {
-            console.error('[Vidulum] Error in Solana event listener:', error);
-          }
-        });
-      }
-    }
-
-    // Request method for compatibility
-    async request(args: { method: string; params?: unknown }): Promise<unknown> {
-      const { method, params } = args;
-
-      switch (method) {
-        case 'connect':
-          return this.connect(params as any);
-        case 'disconnect':
-          return this.disconnect();
-        case 'signTransaction':
-          return this.signTransaction((params as any)?.transaction);
-        case 'signAllTransactions':
-          return this.signAllTransactions((params as any)?.transactions);
-        case 'signMessage':
-          return this.signMessage((params as any)?.message, (params as any)?.display);
-        case 'signAndSendTransaction':
-          return this.signAndSendTransaction(
-            (params as any)?.transaction,
-            (params as any)?.options
-          );
-        default:
-          throw new Error(`Method ${method} not supported`);
-      }
-    }
-  }
-
-  const solana = new SolanaProvider();
-
-  // Expose as window.solana
-  Object.defineProperty(window, 'solana', {
-    get() {
-      return solana;
-    },
-    set() {
-      // Prevent overwriting
-    },
-    configurable: false,
-  });
-
-  // Also expose as window.phantom.solana for full Phantom compatibility
-  Object.defineProperty(window, 'phantom', {
-    value: { solana },
-    writable: false,
-    configurable: false,
-  });
-}
-
-// ============================================================================
-// Coinbase Wallet Provider
-// ============================================================================
-
-if (FEATURES.COINBASE_INJECTION) {
-  // Coinbase Wallet uses the same EIP-1193 interface as Metamask
-  // but identifies itself differently
-  class CoinbaseProvider {
-    readonly isCoinbaseWallet = true;
-    readonly isVidulum = true;
-    readonly _vidulum = true;
-
-    // Also support Metamask compatibility
-    readonly isMetaMask = false;
-
-    chainId: string | null = null;
-    selectedAddress: string | null = null;
-
-    // Event listeners
-    private eventListeners: Map<string, Set<Function>> = new Map();
-
-    constructor() {
-      this.chainId = '0x1';
-    }
-
-    // EIP-1193 request method (same as Metamask)
-    async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
-      const { method, params = [] } = args;
-
-      switch (method) {
-        case 'eth_requestAccounts':
-        case 'eth_accounts': {
-          try {
-            const result = await sendRequest('eth_requestAccounts', {});
-            const accounts = result as string[];
-            if (accounts.length > 0) {
-              this.selectedAddress = accounts[0];
+      emit(event: string, ...args: unknown[]): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+          listeners.forEach((listener) => {
+            try {
+              listener(...args);
+            } catch (error) {
+              console.error('[Vidulum] Error in event listener:', error);
             }
-            return accounts;
-          } catch (error) {
-            throw new Error('User rejected the request');
-          }
+          });
         }
+      }
 
-        case 'eth_chainId': {
-          return this.chainId || '0x1';
-        }
+      // Convenience methods
+      enable(): Promise<string[]> {
+        return this.request({ method: 'eth_requestAccounts' }) as Promise<string[]>;
+      }
 
-        case 'net_version': {
-          const chainIdHex = this.chainId || '0x1';
-          return parseInt(chainIdHex, 16).toString();
-        }
-
-        case 'eth_getBalance':
-        case 'eth_blockNumber':
-        case 'eth_getBlockByNumber':
-        case 'eth_getTransactionByHash':
-        case 'eth_getTransactionReceipt':
-        case 'eth_call':
-        case 'eth_estimateGas':
-        case 'eth_gasPrice':
-        case 'eth_maxPriorityFeePerGas':
-        case 'eth_feeHistory': {
-          return sendRequest(method, { params });
-        }
-
-        case 'eth_sendTransaction': {
-          return sendRequest('eth_sendTransaction', { params: params[0] });
-        }
-
-        case 'eth_signTransaction': {
-          return sendRequest('eth_signTransaction', { params: params[0] });
-        }
-
-        case 'personal_sign': {
-          return sendRequest('personal_sign', { message: params[0], account: params[1] });
-        }
-
-        case 'eth_sign': {
-          return sendRequest('eth_sign', { account: params[0], message: params[1] });
-        }
-
-        case 'eth_signTypedData':
-        case 'eth_signTypedData_v3':
-        case 'eth_signTypedData_v4': {
-          return sendRequest(method, { account: params[0], data: params[1] });
-        }
-
-        case 'wallet_switchEthereumChain': {
-          const chainIdParam = (params[0] as { chainId: string })?.chainId;
-          if (chainIdParam) {
-            this.chainId = chainIdParam;
-            this.emit('chainChanged', chainIdParam);
-            return null;
-          }
-          throw new Error('Invalid chainId');
-        }
-
-        case 'wallet_addEthereumChain': {
-          await sendRequest('wallet_addEthereumChain', { params: params[0] });
-          return null;
-        }
-
-        case 'wallet_watchAsset': {
-          await sendRequest('wallet_watchAsset', { params: params[0] });
-          return true;
-        }
-
-        default:
-          throw new Error(`Method ${method} not supported`);
+      // Check if connected
+      isConnected(): boolean {
+        return true;
       }
     }
 
-    // Legacy send methods
-    send(
-      methodOrPayload: string | { method: string; params?: unknown[] },
-      paramsOrCallback?: unknown[] | Function
-    ): unknown {
-      if (typeof methodOrPayload === 'string') {
-        return this.request({ method: methodOrPayload, params: paramsOrCallback as unknown[] });
-      } else if (typeof paramsOrCallback === 'function') {
-        this.request(methodOrPayload)
-          .then((result) => (paramsOrCallback as Function)(null, { result }))
-          .catch((error) => (paramsOrCallback as Function)(error));
-        return undefined;
-      } else {
-        return this.request(methodOrPayload);
-      }
-    }
+    const ethereum = new EthereumProvider();
 
-    sendAsync(
-      payload: { method: string; params?: unknown[] },
-      callback: (error: Error | null, response?: { result: unknown }) => void
-    ): void {
-      this.request(payload)
-        .then((result) => callback(null, { result }))
-        .catch((error) => callback(error));
-    }
-
-    // Event emitter methods
-    on(event: string, listener: Function): void {
-      if (!this.eventListeners.has(event)) {
-        this.eventListeners.set(event, new Set());
-      }
-      this.eventListeners.get(event)!.add(listener);
-    }
-
-    removeListener(event: string, listener: Function): void {
-      const listeners = this.eventListeners.get(event);
-      if (listeners) {
-        listeners.delete(listener);
-      }
-    }
-
-    emit(event: string, ...args: unknown[]): void {
-      const listeners = this.eventListeners.get(event);
-      if (listeners) {
-        listeners.forEach((listener) => {
-          try {
-            listener(...args);
-          } catch (error) {
-            console.error('[Vidulum] Error in Coinbase Wallet event listener:', error);
-          }
-        });
-      }
-    }
-
-    enable(): Promise<string[]> {
-      return this.request({ method: 'eth_requestAccounts' }) as Promise<string[]>;
-    }
-
-    isConnected(): boolean {
-      return true;
-    }
-  }
-
-  const coinbaseWallet = new CoinbaseProvider();
-
-  // Expose as window.ethereum if Metamask is not enabled
-  // Coinbase Wallet can coexist with Metamask via different access patterns
-  if (!FEATURES.METAMASK_INJECTION) {
+    // Expose as window.ethereum
     Object.defineProperty(window, 'ethereum', {
       get() {
-        return coinbaseWallet;
+        return ethereum;
       },
       set() {
         // Prevent overwriting
       },
       configurable: false,
     });
+
+    // Dispatch ethereum#initialized event (EIP-6963)
+    window.dispatchEvent(new Event('ethereum#initialized'));
   }
 
-  // Also expose as window.coinbaseWalletExtension
-  Object.defineProperty(window, 'coinbaseWalletExtension', {
-    value: coinbaseWallet,
-    writable: false,
-    configurable: false,
-  });
-}
+  // ============================================================================
+  // Phantom-compatible Solana Provider
+  // ============================================================================
+
+  if (FEATURES.PHANTOM_INJECTION) {
+    // Solana Provider
+    class SolanaProvider {
+      readonly isPhantom = true;
+      readonly isVidulum = true;
+      readonly _vidulum = true;
+
+      publicKey: { toBase58: () => string } | null = null;
+      isConnected = false;
+
+      // Event listeners
+      private eventListeners: Map<string, Set<Function>> = new Map();
+
+      constructor() {
+        // Initialize
+      }
+
+      // Connect to wallet
+      async connect(options?: {
+        onlyIfTrusted?: boolean;
+      }): Promise<{ publicKey: { toBase58: () => string } }> {
+        try {
+          if (options?.onlyIfTrusted && !this.isConnected) {
+            throw new Error('User not trusted');
+          }
+
+          const result = (await sendRequest('sol_connect', {})) as { publicKey: string };
+
+          this.publicKey = {
+            toBase58: () => result.publicKey,
+          };
+          this.isConnected = true;
+          this.emit('connect', this.publicKey);
+
+          return { publicKey: this.publicKey };
+        } catch (error) {
+          throw new Error('User rejected the request');
+        }
+      }
+
+      // Disconnect from wallet
+      async disconnect(): Promise<void> {
+        await sendRequest('sol_disconnect', {});
+        this.publicKey = null;
+        this.isConnected = false;
+        this.emit('disconnect');
+      }
+
+      // Sign a transaction
+      async signTransaction(transaction: unknown): Promise<unknown> {
+        if (!this.isConnected) {
+          throw new Error('Wallet not connected');
+        }
+        return sendRequest('sol_signTransaction', { transaction });
+      }
+
+      // Sign multiple transactions
+      async signAllTransactions(transactions: unknown[]): Promise<unknown[]> {
+        if (!this.isConnected) {
+          throw new Error('Wallet not connected');
+        }
+        return sendRequest('sol_signAllTransactions', { transactions }) as Promise<unknown[]>;
+      }
+
+      // Sign a message
+      async signMessage(
+        message: Uint8Array,
+        display?: string
+      ): Promise<{ signature: Uint8Array; publicKey: { toBase58: () => string } }> {
+        if (!this.isConnected) {
+          throw new Error('Wallet not connected');
+        }
+        const result = (await sendRequest('sol_signMessage', {
+          message: Array.from(message),
+          display,
+        })) as { signature: number[]; publicKey: string };
+
+        return {
+          signature: new Uint8Array(result.signature),
+          publicKey: {
+            toBase58: () => result.publicKey,
+          },
+        };
+      }
+
+      // Sign and send transaction
+      async signAndSendTransaction(
+        transaction: unknown,
+        options?: unknown
+      ): Promise<{ signature: string }> {
+        if (!this.isConnected) {
+          throw new Error('Wallet not connected');
+        }
+        return sendRequest('sol_signAndSendTransaction', { transaction, options }) as Promise<{
+          signature: string;
+        }>;
+      }
+
+      // Event emitter methods
+      on(event: string, listener: Function): void {
+        if (!this.eventListeners.has(event)) {
+          this.eventListeners.set(event, new Set());
+        }
+        this.eventListeners.get(event)!.add(listener);
+      }
+
+      removeListener(event: string, listener: Function): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+          listeners.delete(listener);
+        }
+      }
+
+      emit(event: string, ...args: unknown[]): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+          listeners.forEach((listener) => {
+            try {
+              listener(...args);
+            } catch (error) {
+              console.error('[Vidulum] Error in Solana event listener:', error);
+            }
+          });
+        }
+      }
+
+      // Request method for compatibility
+      async request(args: { method: string; params?: unknown }): Promise<unknown> {
+        const { method, params } = args;
+
+        switch (method) {
+          case 'connect':
+            return this.connect(params as any);
+          case 'disconnect':
+            return this.disconnect();
+          case 'signTransaction':
+            return this.signTransaction((params as any)?.transaction);
+          case 'signAllTransactions':
+            return this.signAllTransactions((params as any)?.transactions);
+          case 'signMessage':
+            return this.signMessage((params as any)?.message, (params as any)?.display);
+          case 'signAndSendTransaction':
+            return this.signAndSendTransaction(
+              (params as any)?.transaction,
+              (params as any)?.options
+            );
+          default:
+            throw new Error(`Method ${method} not supported`);
+        }
+      }
+    }
+
+    const solana = new SolanaProvider();
+
+    // Expose as window.solana
+    Object.defineProperty(window, 'solana', {
+      get() {
+        return solana;
+      },
+      set() {
+        // Prevent overwriting
+      },
+      configurable: false,
+    });
+
+    // Also expose as window.phantom.solana for full Phantom compatibility
+    Object.defineProperty(window, 'phantom', {
+      value: { solana },
+      writable: false,
+      configurable: false,
+    });
+  }
+
+  // ============================================================================
+  // Coinbase Wallet Provider
+  // ============================================================================
+
+  if (FEATURES.COINBASE_INJECTION) {
+    // Coinbase Wallet uses the same EIP-1193 interface as Metamask
+    // but identifies itself differently
+    class CoinbaseProvider {
+      readonly isCoinbaseWallet = true;
+      readonly isVidulum = true;
+      readonly _vidulum = true;
+
+      // Also support Metamask compatibility
+      readonly isMetaMask = false;
+
+      chainId: string | null = null;
+      selectedAddress: string | null = null;
+
+      // Event listeners
+      private eventListeners: Map<string, Set<Function>> = new Map();
+
+      constructor() {
+        this.chainId = '0x1';
+      }
+
+      // EIP-1193 request method (same as Metamask)
+      async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
+        const { method, params = [] } = args;
+
+        switch (method) {
+          case 'eth_requestAccounts':
+          case 'eth_accounts': {
+            try {
+              const result = await sendRequest('eth_requestAccounts', {});
+              const accounts = result as string[];
+              if (accounts.length > 0) {
+                this.selectedAddress = accounts[0];
+              }
+              return accounts;
+            } catch (error) {
+              throw new Error('User rejected the request');
+            }
+          }
+
+          case 'eth_chainId': {
+            return this.chainId || '0x1';
+          }
+
+          case 'net_version': {
+            const chainIdHex = this.chainId || '0x1';
+            return parseInt(chainIdHex, 16).toString();
+          }
+
+          case 'eth_getBalance':
+          case 'eth_blockNumber':
+          case 'eth_getBlockByNumber':
+          case 'eth_getTransactionByHash':
+          case 'eth_getTransactionReceipt':
+          case 'eth_call':
+          case 'eth_estimateGas':
+          case 'eth_gasPrice':
+          case 'eth_maxPriorityFeePerGas':
+          case 'eth_feeHistory': {
+            return sendRequest(method, { params });
+          }
+
+          case 'eth_sendTransaction': {
+            return sendRequest('eth_sendTransaction', { params: params[0] });
+          }
+
+          case 'eth_signTransaction': {
+            return sendRequest('eth_signTransaction', { params: params[0] });
+          }
+
+          case 'personal_sign': {
+            return sendRequest('personal_sign', { message: params[0], account: params[1] });
+          }
+
+          case 'eth_sign': {
+            return sendRequest('eth_sign', { account: params[0], message: params[1] });
+          }
+
+          case 'eth_signTypedData':
+          case 'eth_signTypedData_v3':
+          case 'eth_signTypedData_v4': {
+            return sendRequest(method, { account: params[0], data: params[1] });
+          }
+
+          case 'wallet_switchEthereumChain': {
+            const chainIdParam = (params[0] as { chainId: string })?.chainId;
+            if (chainIdParam) {
+              this.chainId = chainIdParam;
+              this.emit('chainChanged', chainIdParam);
+              return null;
+            }
+            throw new Error('Invalid chainId');
+          }
+
+          case 'wallet_addEthereumChain': {
+            await sendRequest('wallet_addEthereumChain', { params: params[0] });
+            return null;
+          }
+
+          case 'wallet_watchAsset': {
+            await sendRequest('wallet_watchAsset', { params: params[0] });
+            return true;
+          }
+
+          default:
+            throw new Error(`Method ${method} not supported`);
+        }
+      }
+
+      // Legacy send methods
+      send(
+        methodOrPayload: string | { method: string; params?: unknown[] },
+        paramsOrCallback?: unknown[] | Function
+      ): unknown {
+        if (typeof methodOrPayload === 'string') {
+          return this.request({ method: methodOrPayload, params: paramsOrCallback as unknown[] });
+        } else if (typeof paramsOrCallback === 'function') {
+          this.request(methodOrPayload)
+            .then((result) => (paramsOrCallback as Function)(null, { result }))
+            .catch((error) => (paramsOrCallback as Function)(error));
+          return undefined;
+        } else {
+          return this.request(methodOrPayload);
+        }
+      }
+
+      sendAsync(
+        payload: { method: string; params?: unknown[] },
+        callback: (error: Error | null, response?: { result: unknown }) => void
+      ): void {
+        this.request(payload)
+          .then((result) => callback(null, { result }))
+          .catch((error) => callback(error));
+      }
+
+      // Event emitter methods
+      on(event: string, listener: Function): void {
+        if (!this.eventListeners.has(event)) {
+          this.eventListeners.set(event, new Set());
+        }
+        this.eventListeners.get(event)!.add(listener);
+      }
+
+      removeListener(event: string, listener: Function): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+          listeners.delete(listener);
+        }
+      }
+
+      emit(event: string, ...args: unknown[]): void {
+        const listeners = this.eventListeners.get(event);
+        if (listeners) {
+          listeners.forEach((listener) => {
+            try {
+              listener(...args);
+            } catch (error) {
+              console.error('[Vidulum] Error in Coinbase Wallet event listener:', error);
+            }
+          });
+        }
+      }
+
+      enable(): Promise<string[]> {
+        return this.request({ method: 'eth_requestAccounts' }) as Promise<string[]>;
+      }
+
+      isConnected(): boolean {
+        return true;
+      }
+    }
+
+    const coinbaseWallet = new CoinbaseProvider();
+
+    // Expose as window.ethereum if Metamask is not enabled
+    // Coinbase Wallet can coexist with Metamask via different access patterns
+    if (!FEATURES.METAMASK_INJECTION) {
+      Object.defineProperty(window, 'ethereum', {
+        get() {
+          return coinbaseWallet;
+        },
+        set() {
+          // Prevent overwriting
+        },
+        configurable: false,
+      });
+    }
+
+    // Also expose as window.coinbaseWalletExtension
+    Object.defineProperty(window, 'coinbaseWalletExtension', {
+      value: coinbaseWallet,
+      writable: false,
+      configurable: false,
+    });
+  }
+})();

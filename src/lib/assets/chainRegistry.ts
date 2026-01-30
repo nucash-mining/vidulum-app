@@ -7,9 +7,10 @@
  * - EVM chains: static native asset definitions
  */
 
-import { networkRegistry, isBitcoinNetwork, isEvmNetwork } from '@/lib/networks';
+import { networkRegistry, isBitcoinNetwork, isEvmNetwork, isSvmNetwork } from '@/lib/networks';
 import { COSMOS_REGISTRY_ASSETS } from './cosmos-registry';
 import { COSMOS_REGISTRY_CHAINS } from '@/lib/networks/cosmos-registry';
+import { getKnownVerifiableAssets } from './knownAssets';
 
 export interface RegistryAsset {
   symbol: string;
@@ -43,6 +44,10 @@ interface ChainRegistryAssetList {
 const assetCache: Map<string, RegistryAsset[]> = new Map();
 const cacheExpiry: Map<string, number> = new Map();
 const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
+
+// Separate cache for Network Manager's curated token lists.
+const manageableAssetCache: Map<string, RegistryAsset[]> = new Map();
+const manageableCacheExpiry: Map<string, number> = new Map();
 
 /**
  * Get chain name from network ID for Cosmos chains
@@ -162,7 +167,7 @@ const bitcoinAssets: Record<string, RegistryAsset[]> = {
 
 // EVM assets
 const evmAssets: Record<string, RegistryAsset[]> = {
-  'ethereum-mainnet': [
+  'eth-mainnet': [
     {
       symbol: 'ETH',
       name: 'Ethereum',
@@ -198,6 +203,9 @@ const evmAssets: Record<string, RegistryAsset[]> = {
     },
   ],
 };
+
+// Backward-compatible alias.
+evmAssets['ethereum-mainnet'] = evmAssets['eth-mainnet'];
 
 // Fallback assets in case chain registry fetch fails
 const fallbackAssets: Record<string, RegistryAsset[]> = {
@@ -413,6 +421,79 @@ export async function fetchChainAssets(networkId: string): Promise<RegistryAsset
     console.log(`Using fallback assets for ${networkId}:`, fallback.length);
     return fallback;
   }
+}
+
+/**
+ * Fetch assets suitable for user enable/disable in Network Manager.
+ * - Cosmos: same as fetchChainAssets (chain-registry list)
+ * - EVM/SVM: native + small curated list of verifiable major tokens
+ */
+export async function fetchManageableAssets(networkId: string): Promise<RegistryAsset[]> {
+  const cached = manageableAssetCache.get(networkId);
+  const expiry = manageableCacheExpiry.get(networkId);
+  if (cached && expiry && Date.now() < expiry) {
+    return cached;
+  }
+
+  const network = networkRegistry.get(networkId);
+
+  // Cosmos: keep full registry behavior.
+  if (network?.type === 'cosmos') {
+    const assets = await fetchChainAssets(networkId);
+    manageableAssetCache.set(networkId, assets);
+    manageableCacheExpiry.set(networkId, Date.now() + CACHE_DURATION);
+    return assets;
+  }
+
+  // EVM/SVM: show native + known token list.
+  // Also supports environments where the registry entry might be missing (e.g. unit tests).
+  const known = getKnownVerifiableAssets(networkId);
+  const isEvmLike = (network && isEvmNetwork(network)) || Boolean(evmAssets[networkId]);
+  const isSvmLike =
+    (network && isSvmNetwork(network)) ||
+    known.some((a) => a.denom.startsWith('spl20:')) ||
+    networkId.startsWith('solana-') ||
+    networkId.startsWith('sonic-') ||
+    networkId.startsWith('eclipse-');
+
+  if (isEvmLike || isSvmLike) {
+    const native: RegistryAsset = (() => {
+      if (isEvmLike) {
+        const base = evmAssets[networkId]?.[0];
+        if (base) return base;
+        return {
+          symbol: (network as any)?.symbol || 'ETH',
+          name: (network as any)?.name || 'EVM Native',
+          denom: 'wei',
+          decimals: (network as any)?.decimals ?? 18,
+          coingeckoId: (network as any)?.coingeckoId,
+        };
+      }
+
+      // SVM native
+      return {
+        symbol: (network as any)?.symbol || 'SOL',
+        name: (network as any)?.name || 'Solana',
+        denom: 'lamports',
+        decimals: (network as any)?.decimals ?? 9,
+        coingeckoId: (network as any)?.coingeckoId,
+      };
+    })();
+
+    const assets = [native, ...known]
+      .filter((a): a is RegistryAsset => Boolean(a))
+      .filter((asset, index, arr) => arr.findIndex((x) => x.denom === asset.denom) === index);
+
+    manageableAssetCache.set(networkId, assets);
+    manageableCacheExpiry.set(networkId, Date.now() + CACHE_DURATION);
+    return assets;
+  }
+
+  // Bitcoin/UTXO and unknown: keep existing static behavior.
+  const assets = await fetchChainAssets(networkId);
+  manageableAssetCache.set(networkId, assets);
+  manageableCacheExpiry.set(networkId, Date.now() + CACHE_DURATION);
+  return assets;
 }
 
 /**

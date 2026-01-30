@@ -6,6 +6,7 @@
 
 import {
   fetchChainAssets,
+  fetchManageableAssets,
   getAssetByDenom,
   getTokenColor,
 } from '@/lib/assets/chainRegistry';
@@ -83,11 +84,19 @@ describe('Chain Registry', () => {
 
     describe('EVM chains (static assets)', () => {
       it('should return assets for Ethereum', async () => {
-        const assets = await fetchChainAssets('ethereum-mainnet');
+        const assets = await fetchChainAssets('eth-mainnet');
 
         expect(assets.length).toBe(1);
         expect(assets[0].symbol).toBe('ETH');
         expect(assets[0].decimals).toBe(18);
+      });
+
+      it('should return assets for legacy Ethereum ID alias', async () => {
+        const assets = await fetchChainAssets('ethereum-mainnet');
+
+        expect(assets.length).toBe(1);
+        expect(assets[0].symbol).toBe('ETH');
+        expect(assets[0].denom).toBe('wei');
       });
 
       it('should return assets for BNB Chain', async () => {
@@ -142,9 +151,24 @@ describe('Chain Registry', () => {
           ],
         };
 
+        // fetchChainAssets caches results in-module. Reset modules to avoid cache hits,
+        // then disable the pre-bundled entry so this test exercises the fetch parsing path.
+        jest.resetModules();
+
+        const { COSMOS_REGISTRY_ASSETS } = await import('@/lib/assets/cosmos-registry');
+        const prevBundled = COSMOS_REGISTRY_ASSETS.beezee;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (COSMOS_REGISTRY_ASSETS as any).beezee = undefined;
+
         (global.fetch as jest.Mock).mockResolvedValueOnce(mockFetchResponse(mockAssetList));
 
-        const assets = await fetchChainAssets('beezee-1');
+        const { fetchChainAssets: fetchChainAssetsFresh } =
+          await import('@/lib/assets/chainRegistry');
+        const assets = await fetchChainAssetsFresh('beezee-1');
+
+        // Restore bundled assets for any subsequent dynamic imports.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (COSMOS_REGISTRY_ASSETS as any).beezee = prevBundled;
 
         expect(assets.length).toBe(1);
         expect(assets[0].symbol).toBe('BZE');
@@ -157,6 +181,44 @@ describe('Chain Registry', () => {
     it('should return empty array for completely unknown chain', async () => {
       const assets = await fetchChainAssets('totally-unknown-chain-xyz');
       expect(assets).toEqual([]);
+    });
+  });
+
+  describe('fetchManageableAssets', () => {
+    it('should include curated ERC20s for Ethereum mainnet', async () => {
+      const assets = await fetchManageableAssets('eth-mainnet');
+
+      // Native + curated tokens
+      expect(assets.length).toBeGreaterThanOrEqual(3);
+      expect(assets[0].denom).toBe('wei');
+
+      const usdc = assets.find((a) => a.symbol === 'USDC');
+      const usdt = assets.find((a) => a.symbol === 'USDT');
+
+      expect(usdc).toBeDefined();
+      expect(usdt).toBeDefined();
+      expect(usdc?.denom).toBe('erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48');
+      expect(usdt?.denom).toBe('erc20:0xdac17f958d2ee523a2206206994597c13d831ec7');
+    });
+
+    it('should include curated SPL20s for Solana mainnet', async () => {
+      const assets = await fetchManageableAssets('solana-mainnet');
+
+      expect(assets.length).toBeGreaterThanOrEqual(4);
+
+      const native = assets.find((a) => a.denom === 'lamports');
+      const usdc = assets.find((a) => a.symbol === 'USDC');
+      const usdt = assets.find((a) => a.symbol === 'USDT');
+      const eth = assets.find((a) => a.symbol === 'ETH');
+
+      expect(native).toBeDefined();
+      expect(usdc).toBeDefined();
+      expect(usdt).toBeDefined();
+      expect(eth).toBeDefined();
+
+      expect(usdc?.denom).toBe('spl20:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+      expect(usdt?.denom).toBe('spl20:Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');
+      expect(eth?.denom).toBe('spl20:7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs');
     });
   });
 

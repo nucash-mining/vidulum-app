@@ -5,6 +5,7 @@ import {
   KeyringAccount,
   BitcoinKeyringAccount,
   EvmKeyringAccount,
+  SvmKeyringAccount,
 } from '@/lib/crypto/keyring';
 import { EncryptedStorage } from '@/lib/storage/encrypted-storage';
 import { MnemonicManager } from '@/lib/crypto/mnemonic';
@@ -50,7 +51,7 @@ async function lockBackground(): Promise<void> {
 }
 
 /**
- * Pre-derive all addresses (Cosmos, Bitcoin, EVM) for all accounts
+ * Pre-derive all addresses (Cosmos, Bitcoin, EVM, SVM) for all accounts
  * Called on wallet create/import/unlock to ensure all addresses are ready
  * Also handles new networks added after wallet was created
  */
@@ -58,6 +59,7 @@ async function preDeriveAllAccounts(keyring: Keyring): Promise<void> {
   const accounts = keyring.getAccounts();
   const bitcoinNetworks = networkRegistry.getEnabledByType('bitcoin');
   const evmNetworks = networkRegistry.getEnabledByType('evm');
+  const svmNetworks = networkRegistry.getEnabledByType('svm');
 
   for (const account of accounts) {
     const accountIndex = account.accountIndex;
@@ -90,6 +92,18 @@ async function preDeriveAllAccounts(keyring: Keyring): Promise<void> {
         console.warn(`Could not derive ${network.id} address for account ${accountIndex}:`, error);
       }
     }
+
+    // Derive all SVM addresses
+    for (const network of svmNetworks) {
+      // Skip if already derived
+      if (keyring.getSvmAddress(network.id, accountIndex)) continue;
+
+      try {
+        await keyring.deriveSvmAccount(network.id, accountIndex);
+      } catch (error) {
+        console.warn(`Could not derive ${network.id} address for account ${accountIndex}:`, error);
+      }
+    }
   }
 }
 
@@ -115,7 +129,7 @@ interface WalletState {
   setAutoLockMinutes: (minutes: number) => Promise<void>;
   updateActivity: () => void;
   renameAccount: (address: string, newName: string) => Promise<void>;
-  addAccount: (name: string) => Promise<KeyringAccount>;
+  addAccount: (name: string, password?: string) => Promise<KeyringAccount>;
   importAccountFromMnemonic: (
     mnemonic: string,
     name: string,
@@ -167,6 +181,10 @@ interface WalletState {
   // EVM-specific methods
   getEvmAddress: (networkId: string, accountIndex?: number) => Promise<string | null>;
   deriveEvmAccount: (networkId: string, accountIndex?: number) => Promise<EvmKeyringAccount | null>;
+
+  // SVM-specific methods
+  getSvmAddress: (networkId: string, accountIndex?: number) => Promise<string | null>;
+  deriveSvmAccount: (networkId: string, accountIndex?: number) => Promise<SvmKeyringAccount | null>;
 }
 
 export const useWalletStore = create<WalletState>((set, get) => ({
@@ -500,18 +518,62 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     });
   },
 
-  addAccount: async (name: string) => {
+  addAccount: async (name: string, password?: string) => {
     const { keyring, accounts, updateSession } = get();
 
     if (!keyring) {
       throw new Error('Wallet is locked');
     }
 
-    // Add account using the keyring (which holds the mnemonic in memory)
-    const newAccount = await keyring.addAccount(name);
+    // If the popup restored from session, the keyring may not have a mnemonic.
+    // Adding a new HD account requires the mnemonic, so request the password and
+    // rebuild an in-memory keyring derived from the decrypted mnemonic.
+    let keyringToUse = keyring;
+
+    if (!keyringToUse.hasMnemonic()) {
+      if (!password) {
+        throw new Error('Password required to add account');
+      }
+
+      let wallet;
+      try {
+        wallet = await EncryptedStorage.loadWallet(password);
+      } catch {
+        throw new Error('Invalid password');
+      }
+
+      if (!wallet) {
+        throw new Error('Failed to load wallet');
+      }
+
+      // Rebuild keyring with the currently known account indices.
+      // (Do NOT include the next index yet; Keyring.addAccount will add it.)
+      const existingIndices = keyring.getAccounts().map((acc) => acc.accountIndex ?? 0);
+      const rebuiltKeyring = new Keyring();
+      await rebuiltKeyring.createFromMnemonic(wallet.mnemonic, 'bze', existingIndices);
+      rebuiltKeyring.setMnemonic(wallet.mnemonic);
+
+      // Restore stored names for derived accounts
+      const rebuiltAccounts = rebuiltKeyring.getAccounts();
+      wallet.accounts.forEach((storedAcc, i) => {
+        if (rebuiltAccounts[i]) {
+          rebuiltAccounts[i].name = storedAcc.name;
+        }
+      });
+
+      // Pre-derive all addresses so EVM/SVM/Bitcoin stays functional
+      await preDeriveAllAccounts(rebuiltKeyring);
+
+      // Swap the keyring in state so subsequent operations use the mnemonic-capable keyring
+      set({ keyring: rebuiltKeyring });
+      keyringToUse = rebuiltKeyring;
+    }
+
+    // Add account using the keyring (requires mnemonic)
+    const newAccount = await keyringToUse.addAccount(name);
 
     // Pre-derive all addresses for all accounts (including the new one)
-    await preDeriveAllAccounts(keyring);
+    await preDeriveAllAccounts(keyringToUse);
 
     // Update accounts list
     const updatedAccounts = [...accounts, newAccount];
@@ -940,6 +1002,55 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       return account;
     } catch (error) {
       console.error('Failed to derive EVM account:', error);
+      return null;
+    }
+  },
+
+  // SVM-specific methods
+  getSvmAddress: async (networkId: string, accountIndex?: number) => {
+    const { keyring, selectedAccount, updateSession } = get();
+    if (!keyring) return null;
+
+    // Use provided accountIndex or fall back to selected account's index
+    const idx = accountIndex ?? selectedAccount?.accountIndex ?? 0;
+
+    // Try to get existing SVM account (may have address from session restore)
+    let svmAccount = keyring.getSvmAccount(networkId, idx);
+
+    // Return cached address if available
+    if (svmAccount?.address) {
+      return svmAccount.address;
+    }
+
+    // Try to derive if mnemonic is available
+    if (keyring.hasMnemonic()) {
+      try {
+        svmAccount = await keyring.deriveSvmAccount(networkId, idx);
+        // Update session with newly derived address
+        await updateSession();
+      } catch (error) {
+        console.error('Failed to derive SVM address:', error);
+        return null;
+      }
+    }
+
+    return svmAccount?.address || null;
+  },
+
+  deriveSvmAccount: async (networkId: string, accountIndex?: number) => {
+    const { keyring, selectedAccount, updateSession } = get();
+    if (!keyring) return null;
+
+    // Use provided accountIndex or fall back to selected account's index
+    const idx = accountIndex ?? selectedAccount?.accountIndex ?? 0;
+
+    try {
+      const account = await keyring.deriveSvmAccount(networkId, idx);
+      // Update session with newly derived address
+      await updateSession();
+      return account;
+    } catch (error) {
+      console.error('Failed to derive SVM account:', error);
       return null;
     }
   },

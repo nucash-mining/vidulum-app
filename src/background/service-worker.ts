@@ -121,6 +121,41 @@ class SessionManager {
 
 const sessionManager = new SessionManager();
 
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/**
+ * Ensure the background has an unlocked keyring.
+ *
+ * In MV3, the service worker cannot directly access the popup's in-memory keyring.
+ * The popup syncs it via MessageType.SYNC_KEYRING after the user unlocks.
+ * For dApp flows (Keplr / EIP-1193 / Phantom), we auto-open the popup and wait
+ * briefly for that sync to happen.
+ */
+async function ensureKeyringAvailable(options?: {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}): Promise<Keyring | null> {
+  const existing = sessionManager.getKeyring();
+  if (existing) return existing;
+
+  // Trigger UI so the user can unlock (and the popup can SYNC_KEYRING).
+  await openExtensionPopup();
+
+  const timeoutMs = options?.timeoutMs ?? 2 * 60 * 1000;
+  const pollIntervalMs = options?.pollIntervalMs ?? 250;
+  const started = Date.now();
+
+  while (Date.now() - started < timeoutMs) {
+    const keyring = sessionManager.getKeyring();
+    if (keyring) return keyring;
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  }
+
+  return null;
+}
+
 // Message handler
 browser.runtime.onMessage.addListener(
   async (message: Message, sender): Promise<MessageResponse> => {
@@ -216,7 +251,7 @@ async function handleEnable(origin: string, payload: any = {}): Promise<MessageR
     return { success: false, error: `Unsupported chain: ${chainId}` };
   }
 
-  const keyring = sessionManager.getKeyring();
+  const keyring = await ensureKeyringAvailable();
   if (!keyring) {
     return { success: false, error: 'Wallet is locked. Please unlock your wallet first.' };
   }
@@ -240,7 +275,7 @@ async function handleGetKey(origin: string, payload: any = {}): Promise<MessageR
     return { success: false, error: 'Not connected to this chain' };
   }
 
-  const keyring = sessionManager.getKeyring();
+  const keyring = await ensureKeyringAvailable();
   if (!keyring) {
     return { success: false, error: 'Wallet is locked' };
   }

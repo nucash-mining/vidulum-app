@@ -5,7 +5,10 @@ import { cosmosClient } from '@/lib/cosmos/client';
 import { getChainWebSocket, disconnectAllWebSockets } from '@/lib/cosmos/websocket';
 import { getBitcoinClient } from '@/lib/bitcoin/client';
 import { getEvmClient } from '@/lib/evm/client';
+import { getSolanaClient } from '@/lib/solana/client';
 import { networkRegistry } from '@/lib/networks';
+import { getKnownVerifiableAssets } from '@/lib/assets/knownAssets';
+import { useNetworkStore } from '@/store/networkStore';
 
 interface ChainState {
   chains: Map<string, ChainInfo>;
@@ -82,8 +85,58 @@ export const useChainStore = create<ChainState>((set, get) => ({
             amount: wei.toString(),
           },
         ];
+
+        // Fetch curated ERC20 balances (only if enabled)
+        const { isAssetEnabled } = useNetworkStore.getState();
+        const known = getKnownVerifiableAssets(networkId).filter((a) =>
+          a.denom.startsWith('erc20:')
+        );
+        for (const asset of known) {
+          if (!isAssetEnabled(networkId, asset.denom)) continue;
+          const contract = asset.denom.slice('erc20:'.length);
+          try {
+            const bal = await client.getErc20Balance(contract, address);
+            balances.push({ denom: asset.denom, amount: bal.toString() });
+          } catch (err) {
+            console.warn(`Failed to fetch ERC20 balance for ${asset.symbol} on ${networkId}:`, err);
+          }
+        }
       } catch (error) {
         console.error(`Failed to fetch EVM balance:`, error);
+        balances = [];
+      }
+    } else if (networkType === 'svm') {
+      // Fetch SVM (Solana) balance
+      try {
+        const client = getSolanaClient(networkId);
+        const lamports = await client.getBalance(address);
+        balances = [
+          {
+            denom: 'lamports',
+            amount: lamports.toString(),
+          },
+        ];
+
+        // Fetch curated SPL token balances (only if enabled)
+        const { isAssetEnabled } = useNetworkStore.getState();
+        const known = getKnownVerifiableAssets(networkId).filter((a) =>
+          a.denom.startsWith('spl20:')
+        );
+        for (const asset of known) {
+          if (!isAssetEnabled(networkId, asset.denom)) continue;
+          const mint = asset.denom.slice('spl20:'.length);
+          try {
+            const bal = await client.getSplTokenBalance(address, mint);
+            balances.push({ denom: asset.denom, amount: bal.toString() });
+          } catch (err) {
+            console.warn(
+              `Failed to fetch SPL token balance for ${asset.symbol} on ${networkId}:`,
+              err
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to fetch SVM balance:`, error);
         balances = [];
       }
     } else {
@@ -139,15 +192,15 @@ export const useChainStore = create<ChainState>((set, get) => ({
     // Subscribe to transactions affecting this address
     const subscriptionId = ws.subscribeToAddress(address, async (txResult) => {
       console.log('Transaction detected for', address, txResult);
-      
+
       const state = get();
-      
+
       // Clear any existing debounce timeout for this key
       const existingTimeout = state.debounceTimeouts.get(key);
       if (existingTimeout) {
         clearTimeout(existingTimeout);
       }
-      
+
       // Debounce balance refresh
       const timeoutHandle = setTimeout(() => {
         const currentState = get();
@@ -160,7 +213,7 @@ export const useChainStore = create<ChainState>((set, get) => ({
         updatedTimeouts.delete(key);
         set({ debounceTimeouts: updatedTimeouts });
       }, 1000);
-      
+
       // Update the timeout map with a fresh copy
       const updatedTimeouts = new Map(state.debounceTimeouts);
       updatedTimeouts.set(key, timeoutHandle);
@@ -184,23 +237,23 @@ export const useChainStore = create<ChainState>((set, get) => ({
     if (subscriptionId) {
       const ws = getChainWebSocket(chain.rpc);
       ws.unsubscribe(subscriptionId);
-      
+
       // Clear any pending debounce timeout for this key
       const existingTimeout = debounceTimeouts.get(key);
       if (existingTimeout) {
         clearTimeout(existingTimeout);
       }
-      
+
       // Update both maps
       const updatedSubscriptions = new Map(subscriptions);
       updatedSubscriptions.delete(key);
       const updatedTimeouts = new Map(debounceTimeouts);
       updatedTimeouts.delete(key);
-      
-      set({ 
+
+      set({
         subscriptions: updatedSubscriptions,
         debounceTimeouts: updatedTimeouts,
-        isSubscribed: updatedSubscriptions.size > 0 
+        isSubscribed: updatedSubscriptions.size > 0,
       });
       console.log(`Unsubscribed from balance updates for ${address} on ${chainId}`);
     }
@@ -210,7 +263,7 @@ export const useChainStore = create<ChainState>((set, get) => ({
     // Clear all pending debounce timeouts
     const { debounceTimeouts } = get();
     debounceTimeouts.forEach((timeout) => clearTimeout(timeout));
-    
+
     disconnectAllWebSockets();
     set({ subscriptions: new Map(), debounceTimeouts: new Map(), isSubscribed: false });
     console.log('Unsubscribed from all balance updates');

@@ -154,6 +154,31 @@ export class EvmClient {
   }
 
   /**
+   * Perform an eth_call against a contract.
+   */
+  async call(to: string, data: string): Promise<string> {
+    const normalizedTo = to.startsWith('0x') ? to : `0x${to}`;
+    const normalizedData = data.startsWith('0x') ? data : `0x${data}`;
+    return this.rpcCall<string>('eth_call', [{ to: normalizedTo, data: normalizedData }, 'latest']);
+  }
+
+  /**
+   * Get ERC20 token balance for an address.
+   * Returns balance in the token's smallest unit.
+   */
+  async getErc20Balance(contractAddress: string, holderAddress: string): Promise<bigint> {
+    const methodId = '0x70a08231'; // balanceOf(address)
+    const holder = holderAddress.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+    const data = `${methodId}${holder}`;
+
+    const result = await this.call(contractAddress, data);
+
+    // Some RPCs may return '0x' for empty/invalid calls.
+    if (!result || result === '0x') return 0n;
+    return BigInt(result);
+  }
+
+  /**
    * Get balance in wei
    */
   async getBalance(address: string): Promise<bigint> {

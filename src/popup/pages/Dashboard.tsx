@@ -35,7 +35,8 @@ import { useWalletStore } from '@/store/walletStore';
 import { useChainStore } from '@/store/chainStore';
 import { UI_CHAINS, SUPPORTED_CHAINS, getNetworkType } from '@/lib/cosmos/chains';
 import { Keyring } from '@/lib/crypto/keyring';
-import { fetchChainAssets, RegistryAsset, getTokenColor } from '@/lib/assets/chainRegistry';
+import { fetchManageableAssets, RegistryAsset, getTokenColor } from '@/lib/assets/chainRegistry';
+import { networkRegistry } from '@/lib/networks';
 import { getExplorerAccountUrl } from '@/lib/networks';
 import SendModal from '../components/SendModal';
 import SwapModal from '../components/SwapModal';
@@ -69,6 +70,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     getAddressForChain,
     getBitcoinAddress,
     getEvmAddress,
+    getSvmAddress,
     updateActivity,
   } = useWalletStore();
 
@@ -93,7 +95,9 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [bitcoinAddressCache, setBitcoinAddressCache] = useState<Map<number, string>>(new Map());
   // Cache of EVM addresses for all accounts: accountIndex -> address
   const [evmAddressCache, setEvmAddressCache] = useState<Map<number, string>>(new Map());
-  // Network tab: 0 = All, 1 = Cosmos, 2 = UTXO, 3 = EVM
+  // Cache of SVM addresses for all accounts: accountIndex -> address
+  const [svmAddressCache, setSvmAddressCache] = useState<Map<number, string>>(new Map());
+  // Network tab: 0 = All, 1 = Cosmos, 2 = UTXO, 3 = EVM, 4 = SVM
   const [networkTab, setNetworkTab] = useState(0);
 
   // Handle network tab change - auto-select first network of that type
@@ -119,6 +123,12 @@ const Dashboard: React.FC<DashboardProps> = ({
       if (evmNetwork) {
         selectChain(evmNetwork.id);
       }
+    } else if (tabIndex === 4) {
+      // SVM tab - select first enabled SVM network
+      const svmNetwork = enabledUIChains.find((n) => n.type === 'svm');
+      if (svmNetwork) {
+        selectChain(svmNetwork.id);
+      }
     }
     // All tab (0) - keep current selection
   };
@@ -133,7 +143,12 @@ const Dashboard: React.FC<DashboardProps> = ({
   } = useDisclosure();
 
   // Network store for preferences
-  const { loadPreferences, isLoaded: networkPrefsLoaded, isNetworkEnabled } = useNetworkStore();
+  const {
+    loadPreferences,
+    isLoaded: networkPrefsLoaded,
+    isNetworkEnabled,
+    isAssetEnabled,
+  } = useNetworkStore();
 
   // Get selected chain info
   const selectedChain = UI_CHAINS.find((c) => c.id === selectedChainId) || UI_CHAINS[0];
@@ -142,10 +157,15 @@ const Dashboard: React.FC<DashboardProps> = ({
   const isCosmosSelected = selectedNetworkType === 'cosmos';
   const isBitcoinSelected = selectedNetworkType === 'bitcoin';
   const isEvmSelected = selectedNetworkType === 'evm';
+  const isSvmSelected = selectedNetworkType === 'svm';
 
   // State for EVM address
   const [evmAddress, setEvmAddress] = useState<string>('');
   const [loadingEvmAddress, setLoadingEvmAddress] = useState(false);
+
+  // State for SVM address
+  const [svmAddress, setSvmAddress] = useState<string>('');
+  const [loadingSvmAddress, setLoadingSvmAddress] = useState(false);
 
   // Derive Bitcoin address when Bitcoin network is selected
   useEffect(() => {
@@ -182,6 +202,24 @@ const Dashboard: React.FC<DashboardProps> = ({
         });
     }
   }, [isEvmSelected, selectedChainId, selectedAccount, getEvmAddress]);
+
+  // Derive SVM address when SVM network is selected
+  useEffect(() => {
+    if (isSvmSelected && selectedAccount) {
+      setLoadingSvmAddress(true);
+      getSvmAddress(selectedChainId)
+        .then((addr) => {
+          setSvmAddress(addr || '');
+        })
+        .catch((err) => {
+          console.error('Failed to get SVM address:', err);
+          setSvmAddress('');
+        })
+        .finally(() => {
+          setLoadingSvmAddress(false);
+        });
+    }
+  }, [isSvmSelected, selectedChainId, selectedAccount, getSvmAddress]);
 
   // Derive Bitcoin addresses for all accounts when Bitcoin network is selected
   useEffect(() => {
@@ -232,11 +270,34 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [isEvmSelected, selectedChainId, accounts, getEvmAddress]);
 
+  // Derive SVM addresses for all accounts when SVM network is selected
+  useEffect(() => {
+    if (isSvmSelected && accounts.length > 0) {
+      const deriveAllSvmAddresses = async () => {
+        const newCache = new Map<number, string>();
+        for (const account of accounts) {
+          try {
+            const addr = await getSvmAddress(selectedChainId, account.accountIndex);
+            if (addr) {
+              newCache.set(account.accountIndex, addr);
+            }
+          } catch (err) {
+            console.error(`Failed to derive SVM address for account ${account.accountIndex}:`, err);
+          }
+        }
+        setSvmAddressCache(newCache);
+      };
+      deriveAllSvmAddresses();
+    } else {
+      setSvmAddressCache(new Map());
+    }
+  }, [isSvmSelected, selectedChainId, accounts, getSvmAddress]);
+
   // Token config with colors and mock prices
   // Load chain assets from registry when chain changes
   useEffect(() => {
     const loadAssets = async () => {
-      const assets = await fetchChainAssets(selectedChainId);
+      const assets = await fetchManageableAssets(selectedChainId);
       setChainAssets(assets);
     };
     loadAssets();
@@ -255,6 +316,20 @@ const Dashboard: React.FC<DashboardProps> = ({
         priceUsd: 0, // Price data not available from registry
       };
     }
+
+    // Special handling for native tokens
+    if (denom === 'lamports') {
+      const svm = networkRegistry.getSvm(selectedChainId);
+      return {
+        symbol: svm?.symbol || 'SOL',
+        name: svm?.name || 'Solana',
+        decimals: svm?.decimals ?? 9,
+        color: getTokenColor(svm?.symbol || 'SOL'),
+        logoUrl: undefined,
+        priceUsd: 0,
+      };
+    }
+
     // Fallback for unknown tokens
     return {
       symbol: denom.startsWith('ibc/') ? 'IBC' : denom.slice(0, 6).toUpperCase(),
@@ -287,6 +362,12 @@ const Dashboard: React.FC<DashboardProps> = ({
       return evmAddress || 'Deriving address...';
     }
 
+    // For SVM, use the derived SVM address
+    if (isSvmSelected) {
+      if (loadingSvmAddress) return 'Loading...';
+      return svmAddress || 'Deriving address...';
+    }
+
     return selectedAccount.address;
   };
 
@@ -303,6 +384,12 @@ const Dashboard: React.FC<DashboardProps> = ({
     // For EVM, use cached derived address
     if (isEvmSelected) {
       const cachedAddr = evmAddressCache.get(accountIndex);
+      return cachedAddr || 'Deriving...';
+    }
+
+    // For SVM, use cached derived address
+    if (isSvmSelected) {
+      const cachedAddr = svmAddressCache.get(accountIndex);
       return cachedAddr || 'Deriving...';
     }
 
@@ -364,7 +451,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     return () => {
       unsubscribeAll();
     };
-  }, [selectedAccount, selectedChainId, isCosmosSelected, bitcoinAddress, evmAddress]);
+  }, [selectedAccount, selectedChainId, isCosmosSelected, bitcoinAddress, evmAddress, svmAddress]);
 
   const loadBalance = async () => {
     if (!selectedAccount) return;
@@ -583,6 +670,15 @@ const Dashboard: React.FC<DashboardProps> = ({
                         onChange={(e) => setNewAccountName(e.target.value)}
                         autoFocus
                       />
+                      <Input
+                        size="sm"
+                        bg="#0a0a0a"
+                        borderColor="#3a3a3a"
+                        placeholder="Wallet password"
+                        type="password"
+                        value={importPassword}
+                        onChange={(e) => setImportPassword(e.target.value)}
+                      />
                       <HStack>
                         <Button
                           size="sm"
@@ -592,7 +688,10 @@ const Dashboard: React.FC<DashboardProps> = ({
                           onClick={async () => {
                             setAddingLoading(true);
                             try {
-                              await addAccount(newAccountName || `Account ${accounts.length + 1}`);
+                              await addAccount(
+                                newAccountName || `Account ${accounts.length + 1}`,
+                                importPassword
+                              );
                               toast({
                                 title: 'Account created',
                                 status: 'success',
@@ -935,6 +1034,16 @@ const Dashboard: React.FC<DashboardProps> = ({
                   >
                     EVM
                   </Tab>
+                  <Tab
+                    fontSize="xs"
+                    px={2}
+                    py={1}
+                    borderRadius="full"
+                    color="gray.500"
+                    _selected={{ bg: 'green.600', color: 'white' }}
+                  >
+                    SVM
+                  </Tab>
                 </TabList>
               </Tabs>
             </HStack>
@@ -988,22 +1097,28 @@ const Dashboard: React.FC<DashboardProps> = ({
                       if (networkTab === 1) return network.type === 'cosmos'; // Cosmos only
                       if (networkTab === 2) return network.type === 'bitcoin'; // UTXO only
                       if (networkTab === 3) return network.type === 'evm'; // EVM only
+                      if (networkTab === 4) return network.type === 'svm'; // SVM only
                       return true;
                     })
                     .map((network) => {
                       const isActive = selectedChainId === network.id;
                       const isBitcoin = network.type === 'bitcoin';
                       const isEvm = network.type === 'evm';
+                      const isSvm = network.type === 'svm';
                       const borderActiveColor = isBitcoin
                         ? 'orange.500'
                         : isEvm
                           ? 'blue.500'
-                          : 'cyan.500';
+                          : isSvm
+                            ? 'green.500'
+                            : 'cyan.500';
                       const borderHoverColor = isBitcoin
                         ? 'orange.400'
                         : isEvm
                           ? 'blue.400'
-                          : 'cyan.400';
+                          : isSvm
+                            ? 'green.400'
+                            : 'cyan.400';
                       return (
                         <Button
                           key={network.id}
@@ -1201,15 +1316,30 @@ const Dashboard: React.FC<DashboardProps> = ({
                   }
 
                   // Create full asset list with balances from chain registry
-                  const assetsWithBalances = chainAssets.map((asset) => ({
-                    denom: asset.denom,
-                    amount: balanceMap.get(asset.denom) || '0',
-                  }));
+                  const assetsWithBalances = chainAssets
+                    .filter((asset) => {
+                      // Native token is always visible
+                      const native = chainAssets.length > 0 ? chainAssets[0].denom : undefined;
+                      if (native && asset.denom === native) return true;
+                      return isAssetEnabled(selectedChainId, asset.denom);
+                    })
+                    .map((asset) => ({
+                      denom: asset.denom,
+                      amount: balanceMap.get(asset.denom) || '0',
+                    }));
 
                   // Also include any tokens from balance that aren't in registry
                   if (balance) {
                     balance.forEach((b) => {
-                      if (!chainAssets.find((a) => a.denom === b.denom)) {
+                      const registryAsset = chainAssets.find((a) => a.denom === b.denom);
+                      const native = chainAssets.length > 0 ? chainAssets[0].denom : undefined;
+
+                      // Skip disabled assets that are known (but never skip native)
+                      if (registryAsset && native && b.denom !== native) {
+                        if (!isAssetEnabled(selectedChainId, b.denom)) return;
+                      }
+
+                      if (!registryAsset) {
                         assetsWithBalances.push({ denom: b.denom, amount: b.amount });
                       }
                     });
@@ -1226,7 +1356,17 @@ const Dashboard: React.FC<DashboardProps> = ({
                           ? 'uatone'
                           : selectedChainId.startsWith('bitcoin')
                             ? 'sat'
-                            : 'wei';
+                            : isSvmSelected
+                              ? 'lamports'
+                              : 'wei';
+
+                  // Ensure native asset is always present in the list, even if registry is empty
+                  if (!assetsWithBalances.find((a) => a.denom === nativeDenom)) {
+                    assetsWithBalances.push({
+                      denom: nativeDenom,
+                      amount: balanceMap.get(nativeDenom) || '0',
+                    });
+                  }
                   const vdlDenom = 'factory/bze13gzq40che93tgfm9kzmkpjamah5nj0j73pyhqk/uvdl';
 
                   const sortedAssets = [...assetsWithBalances].sort((a, b) => {
@@ -1358,6 +1498,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         networkType={selectedNetworkType}
         bitcoinAddress={bitcoinAddress}
         evmAddress={evmAddress}
+        svmAddress={svmAddress}
       />
 
       {/* Swap Modal */}

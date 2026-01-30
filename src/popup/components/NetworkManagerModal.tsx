@@ -26,7 +26,7 @@ import {
 } from '@chakra-ui/react';
 import { ChevronDownIcon } from '@chakra-ui/icons';
 import { useNetworkStore } from '@/store/networkStore';
-import { fetchChainAssets, RegistryAsset } from '@/lib/assets/chainRegistry';
+import { fetchManageableAssets, RegistryAsset } from '@/lib/assets/chainRegistry';
 import { NetworkConfig } from '@/lib/networks';
 
 interface NetworkManagerModalProps {
@@ -51,13 +51,13 @@ const NetworkItem: React.FC<NetworkItemProps> = ({ network, isEnabled, onToggle 
   useEffect(() => {
     if (expandedForAssets && isEnabled && assets.length === 0) {
       setLoadingAssets(true);
-      fetchChainAssets(network.id)
+      fetchManageableAssets(network.id)
         .then((a) => setAssets(a))
         .finally(() => setLoadingAssets(false));
     }
   }, [expandedForAssets, isEnabled, network.id, assets.length]);
 
-  const hasAssets = network.type === 'cosmos'; // Cosmos chains have multiple assets
+  const hasAssets = network.type === 'cosmos' || network.type === 'evm' || network.type === 'svm';
 
   return (
     <Box
@@ -91,7 +91,9 @@ const NetworkItem: React.FC<NetworkItemProps> = ({ network, isEnabled, onToggle 
                   ? 'purple'
                   : network.type === 'bitcoin'
                     ? 'orange'
-                    : 'blue'
+                    : network.type === 'svm'
+                      ? 'green'
+                      : 'blue'
               }
               fontSize="2xs"
             >
@@ -226,6 +228,7 @@ const NetworkManagerModal: React.FC<NetworkManagerModalProps> = ({
   const cosmosNetworks = getNetworksByType('cosmos');
   const bitcoinNetworks = getNetworksByType('bitcoin');
   const evmNetworks = getNetworksByType('evm');
+  const svmNetworks = getNetworksByType('svm');
 
   const handleToggle = async (networkId: string, enabled: boolean) => {
     await setNetworkEnabled(networkId, enabled);
@@ -275,6 +278,14 @@ const NetworkManagerModal: React.FC<NetworkManagerModalProps> = ({
                 _selected={{ bg: 'blue.600', color: 'white' }}
               >
                 EVM ({getEnabledCount(evmNetworks)}/{evmNetworks.length})
+              </Tab>
+              <Tab
+                fontSize="xs"
+                px={3}
+                borderRadius="full"
+                _selected={{ bg: 'green.600', color: 'white' }}
+              >
+                SVM ({getEnabledCount(svmNetworks)}/{svmNetworks.length})
               </Tab>
             </TabList>
 
@@ -328,6 +339,26 @@ const NetworkManagerModal: React.FC<NetworkManagerModalProps> = ({
                     </Text>
                   ) : (
                     evmNetworks.map((network) => (
+                      <NetworkItem
+                        key={network.id}
+                        network={network}
+                        isEnabled={isNetworkEnabled(network.id)}
+                        onToggle={(enabled) => handleToggle(network.id, enabled)}
+                      />
+                    ))
+                  )}
+                </VStack>
+              </TabPanel>
+
+              {/* SVM Networks */}
+              <TabPanel p={0}>
+                <VStack spacing={2} align="stretch">
+                  {svmNetworks.length === 0 ? (
+                    <Text color="gray.500" textAlign="center" py={4}>
+                      No SVM networks available
+                    </Text>
+                  ) : (
+                    svmNetworks.map((network) => (
                       <NetworkItem
                         key={network.id}
                         network={network}
