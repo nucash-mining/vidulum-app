@@ -300,7 +300,6 @@ export const WATTX_MAINNET: BitcoinNetworkConfig = {
   coinType: 2330, // Custom coin type
   network: 'mainnet',
   apiUrls: [
-    'http://129.80.40.193/wattx/blockstream-api',
     'https://wtx-explorer.wattxchange.app/blockstream-api',
   ],
   addressType: 'p2wpkh', // W... addresses with SegWit support
@@ -331,7 +330,6 @@ export const HTH_MAINNET: BitcoinNetworkConfig = {
   network: 'mainnet',
   apiUrls: [
     'https://hth-explorer.wattxchange.app/blockstream-api',
-    'http://129.80.40.193/hth/blockstream-api',
   ],
   addressType: 'p2pkh', // h... addresses
   addressPrefix: {
@@ -360,7 +358,6 @@ export const FLOPCOIN_MAINNET: BitcoinNetworkConfig = {
   network: 'mainnet',
   apiUrls: [
     'https://flop-explorer.wattxchange.app/blockstream-api',
-    'http://129.80.40.193/flopcoin/blockstream-api',
   ],
   addressType: 'p2pkh', // F... addresses
   addressPrefix: {
@@ -416,8 +413,7 @@ export const BITNET_MAINNET: BitcoinNetworkConfig = {
   coinType: 0, // Uses Bitcoin's coin type
   network: 'mainnet',
   apiUrls: [
-    'http://129.80.40.193/bitnet/blockstream-api',
-    'https://bitnet.outsidethebox.top/blockstream-api',
+    'https://alt-explorer.wattxchange.app/blockstream-api',
   ],
   addressType: 'p2wpkh', // SegWit support
   addressPrefix: {
@@ -426,7 +422,7 @@ export const BITNET_MAINNET: BitcoinNetworkConfig = {
     bech32: 'bit',
   },
   logoUrl: '/chains/bitnet.png',
-  explorerUrl: 'https://bitnet.outsidethebox.top/explorer',
+  explorerUrl: 'https://alt-explorer.wattxchange.app',
   explorerAccountPath: '/address/{address}',
   explorerTxPath: '/tx/{txHash}',
 };
