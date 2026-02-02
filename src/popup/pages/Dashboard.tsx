@@ -40,6 +40,7 @@ import { getExplorerAccountUrl } from '@/lib/networks';
 import SendModal from '../components/SendModal';
 import SwapModal from '../components/SwapModal';
 import NetworkManagerModal from '../components/NetworkManagerModal';
+import ReceiveModal from '../components/ReceiveModal';
 import { useNetworkStore } from '@/store/networkStore';
 
 interface DashboardProps {
@@ -126,6 +127,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   const toast = useToast();
   const { isOpen: isSendOpen, onOpen: onSendOpen, onClose: onSendClose } = useDisclosure();
   const { isOpen: isSwapOpen, onOpen: onSwapOpen, onClose: onSwapClose } = useDisclosure();
+  const { isOpen: isReceiveOpen, onOpen: onReceiveOpen, onClose: onReceiveClose } = useDisclosure();
   const {
     isOpen: isNetworkManagerOpen,
     onOpen: onNetworkManagerOpen,
@@ -1045,6 +1047,16 @@ const Dashboard: React.FC<DashboardProps> = ({
                 borderColor="#3a3a3a"
                 borderRadius="xl"
                 flex={1}
+                onClick={onReceiveOpen}
+              >
+                Receive
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                borderColor="#3a3a3a"
+                borderRadius="xl"
+                flex={1}
                 onClick={onSendOpen}
               >
                 Send
@@ -1352,6 +1364,13 @@ const Dashboard: React.FC<DashboardProps> = ({
       >
         Settings
       </Button>
+
+      {/* Receive Modal */}
+      <ReceiveModal
+        isOpen={isReceiveOpen}
+        onClose={onReceiveClose}
+        initialNetworkId={selectedChainId}
+      />
 
       {/* Send Modal */}
       <SendModal
