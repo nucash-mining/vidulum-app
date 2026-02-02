@@ -300,7 +300,8 @@ export const WATTX_MAINNET: BitcoinNetworkConfig = {
   coinType: 2330, // Custom coin type
   network: 'mainnet',
   apiUrls: [
-    'https://wtx-explorer.wattxchange.app/api',
+    'http://129.80.40.193/wattx/blockstream-api',
+    'https://wtx-explorer.wattxchange.app/blockstream-api',
   ],
   addressType: 'p2wpkh', // W... addresses with SegWit support
   addressPrefix: {
@@ -329,7 +330,8 @@ export const HTH_MAINNET: BitcoinNetworkConfig = {
   coinType: 231, // BIP44 coin type for HTH
   network: 'mainnet',
   apiUrls: [
-    'https://explorer.hth.world/api',
+    'https://hth-explorer.wattxchange.app/blockstream-api',
+    'http://129.80.40.193/hth/blockstream-api',
   ],
   addressType: 'p2pkh', // h... addresses
   addressPrefix: {
@@ -337,7 +339,7 @@ export const HTH_MAINNET: BitcoinNetworkConfig = {
     scriptHash: 0x28, // H addresses (40)
   },
   logoUrl: '/chains/hth.png',
-  explorerUrl: 'https://explorer.hth.world',
+  explorerUrl: 'https://hth-explorer.wattxchange.app',
   explorerAccountPath: '/address/{address}',
   explorerTxPath: '/tx/{txHash}',
 };
@@ -357,7 +359,8 @@ export const FLOPCOIN_MAINNET: BitcoinNetworkConfig = {
   coinType: 3, // Uses Dogecoin's coin type (fork)
   network: 'mainnet',
   apiUrls: [
-    'https://explorer.flopcoin.net/api',
+    'https://flop-explorer.wattxchange.app/blockstream-api',
+    'http://129.80.40.193/flopcoin/blockstream-api',
   ],
   addressType: 'p2pkh', // F... addresses
   addressPrefix: {
@@ -365,7 +368,7 @@ export const FLOPCOIN_MAINNET: BitcoinNetworkConfig = {
     scriptHash: 0x16, // (22)
   },
   logoUrl: '/chains/flopcoin.png',
-  explorerUrl: 'https://explorer.flopcoin.net',
+  explorerUrl: 'https://flop-explorer.wattxchange.app',
   explorerAccountPath: '/address/{address}',
   explorerTxPath: '/tx/{txHash}',
 };
@@ -413,7 +416,8 @@ export const BITNET_MAINNET: BitcoinNetworkConfig = {
   coinType: 0, // Uses Bitcoin's coin type
   network: 'mainnet',
   apiUrls: [
-    'https://bitnet.outsidethebox.top/api',
+    'http://129.80.40.193/bitnet/blockstream-api',
+    'https://bitnet.outsidethebox.top/blockstream-api',
   ],
   addressType: 'p2wpkh', // SegWit support
   addressPrefix: {
