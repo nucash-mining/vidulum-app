@@ -103,6 +103,48 @@ export const UTXO_NETWORKS = {
     wif: 0xcc,
     coinType: 5, // Uses Dash's coin type
   },
+  // WATTx - W addresses with SegWit
+  'wattx-mainnet': {
+    name: 'WATTx',
+    bech32: 'wx',
+    pubKeyHash: 0x49, // W addresses (73)
+    scriptHash: 0x4b, // (75)
+    wif: 0x80,
+    coinType: 2330,
+  },
+  // HTH - h addresses
+  'hth-mainnet': {
+    name: 'Help The Homeless',
+    pubKeyHash: 0x64, // h addresses (100)
+    scriptHash: 0x28, // H addresses (40)
+    wif: 0xe4, // (228)
+    coinType: 231,
+  },
+  // Flopcoin - F addresses (Dogecoin fork)
+  'flopcoin-mainnet': {
+    name: 'Flopcoin',
+    pubKeyHash: 0x23, // F addresses (35)
+    scriptHash: 0x16, // (22)
+    wif: 0x9e, // (158)
+    coinType: 3, // Uses Dogecoin's coin type
+  },
+  // Trollcoin - T addresses
+  'trollcoin-mainnet': {
+    name: 'Trollcoin',
+    pubKeyHash: 0x42, // T addresses (66)
+    scriptHash: 0x05, // (5)
+    wif: 0x99, // (153)
+    coinType: 0,
+  },
+  // Bitnet - SegWit support
+  'bitnet-mainnet': {
+    name: 'Bitnet',
+    bech32: 'bit',
+    pubKeyHash: 0x19, // (25)
+    scriptHash: 0x16, // (22)
+    wif: 0x9e, // (158)
+    coinType: 0,
+  },
 } as const;
 
 export type UtxoNetworkId = keyof typeof UTXO_NETWORKS;

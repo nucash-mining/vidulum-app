@@ -158,6 +158,48 @@ const bitcoinAssets: Record<string, RegistryAsset[]> = {
       coingeckoId: 'noso',
     },
   ],
+  'wattx-mainnet': [
+    {
+      symbol: 'WATTX',
+      name: 'WATTx',
+      denom: 'satoshi',
+      decimals: 8,
+    },
+  ],
+  'hth-mainnet': [
+    {
+      symbol: 'HTH',
+      name: 'Help The Homeless',
+      denom: 'satoshi',
+      decimals: 8,
+      coingeckoId: 'help-the-homeless-coin',
+    },
+  ],
+  'flopcoin-mainnet': [
+    {
+      symbol: 'FLOP',
+      name: 'Flopcoin',
+      denom: 'satoshi',
+      decimals: 8,
+    },
+  ],
+  'trollcoin-mainnet': [
+    {
+      symbol: 'TROLL',
+      name: 'Trollcoin',
+      denom: 'satoshi',
+      decimals: 8,
+      coingeckoId: 'trollcoin',
+    },
+  ],
+  'bitnet-mainnet': [
+    {
+      symbol: 'BIT',
+      name: 'Bitnet',
+      denom: 'satoshi',
+      decimals: 8,
+    },
+  ],
 };
 
 // EVM assets
@@ -453,6 +495,11 @@ const tokenColors: Record<string, string> = {
   BTCZ: '#F7931A', // BitcoinZ orange
   DOGE: '#C2A633', // Dogecoin gold
   NOSO: '#1E88E5', // NOSO blue (Dash-derived)
+  WATTX: '#FFD700', // WATTx gold
+  HTH: '#E91E63', // HTH pink
+  FLOP: '#9C27B0', // Flopcoin purple
+  TROLL: '#4CAF50', // Trollcoin green
+  BIT: '#2196F3', // Bitnet blue
   // EVM
   ETH: '#627EEA',
   BNB: '#F0B90B',

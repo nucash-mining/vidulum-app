@@ -286,6 +286,148 @@ export const NOSO_MAINNET: BitcoinNetworkConfig = {
 };
 
 // ============================================================================
+// WATTx
+// ============================================================================
+
+// WATTx Mainnet
+export const WATTX_MAINNET: BitcoinNetworkConfig = {
+  id: 'wattx-mainnet',
+  name: 'WATTx',
+  type: 'bitcoin',
+  enabled: true,
+  symbol: 'WATTX',
+  decimals: 8,
+  coinType: 2330, // Custom coin type
+  network: 'mainnet',
+  apiUrls: [
+    'https://wtx-explorer.wattxchange.app/api',
+  ],
+  addressType: 'p2wpkh', // W... addresses with SegWit support
+  addressPrefix: {
+    pubKeyHash: 0x49, // W addresses (73)
+    scriptHash: 0x4b, // (75)
+    bech32: 'wx',
+  },
+  logoUrl: '/chains/wattx.png',
+  explorerUrl: 'https://wtx-explorer.wattxchange.app',
+  explorerAccountPath: '/address/{address}',
+  explorerTxPath: '/tx/{txHash}',
+};
+
+// ============================================================================
+// Help The Homeless (HTH)
+// ============================================================================
+
+// HTH Mainnet
+export const HTH_MAINNET: BitcoinNetworkConfig = {
+  id: 'hth-mainnet',
+  name: 'Help The Homeless',
+  type: 'bitcoin',
+  enabled: true,
+  symbol: 'HTH',
+  decimals: 8,
+  coinType: 231, // BIP44 coin type for HTH
+  network: 'mainnet',
+  apiUrls: [
+    'https://explorer.hth.world/api',
+  ],
+  addressType: 'p2pkh', // h... addresses
+  addressPrefix: {
+    pubKeyHash: 0x64, // h addresses (100)
+    scriptHash: 0x28, // H addresses (40)
+  },
+  logoUrl: '/chains/hth.png',
+  explorerUrl: 'https://explorer.hth.world',
+  explorerAccountPath: '/address/{address}',
+  explorerTxPath: '/tx/{txHash}',
+};
+
+// ============================================================================
+// Flopcoin
+// ============================================================================
+
+// Flopcoin Mainnet
+export const FLOPCOIN_MAINNET: BitcoinNetworkConfig = {
+  id: 'flopcoin-mainnet',
+  name: 'Flopcoin',
+  type: 'bitcoin',
+  enabled: true,
+  symbol: 'FLOP',
+  decimals: 8,
+  coinType: 3, // Uses Dogecoin's coin type (fork)
+  network: 'mainnet',
+  apiUrls: [
+    'https://explorer.flopcoin.net/api',
+  ],
+  addressType: 'p2pkh', // F... addresses
+  addressPrefix: {
+    pubKeyHash: 0x23, // F addresses (35)
+    scriptHash: 0x16, // (22)
+  },
+  logoUrl: '/chains/flopcoin.png',
+  explorerUrl: 'https://explorer.flopcoin.net',
+  explorerAccountPath: '/address/{address}',
+  explorerTxPath: '/tx/{txHash}',
+};
+
+// ============================================================================
+// Trollcoin
+// ============================================================================
+
+// Trollcoin Mainnet
+export const TROLLCOIN_MAINNET: BitcoinNetworkConfig = {
+  id: 'trollcoin-mainnet',
+  name: 'Trollcoin',
+  type: 'bitcoin',
+  enabled: true,
+  symbol: 'TROLL',
+  decimals: 8,
+  coinType: 0, // Uses Bitcoin's coin type
+  network: 'mainnet',
+  apiUrls: [
+    'https://chainz.cryptoid.info/troll/api.dws',
+  ],
+  addressType: 'p2pkh', // T... addresses
+  addressPrefix: {
+    pubKeyHash: 0x42, // T addresses (66)
+    scriptHash: 0x05, // (5)
+  },
+  logoUrl: '/chains/trollcoin.png',
+  explorerUrl: 'https://chainz.cryptoid.info/troll',
+  explorerAccountPath: '/address.dws?{address}.htm',
+  explorerTxPath: '/tx.dws?{txHash}.htm',
+};
+
+// ============================================================================
+// Bitnet
+// ============================================================================
+
+// Bitnet Mainnet
+export const BITNET_MAINNET: BitcoinNetworkConfig = {
+  id: 'bitnet-mainnet',
+  name: 'Bitnet',
+  type: 'bitcoin',
+  enabled: true,
+  symbol: 'BIT',
+  decimals: 8,
+  coinType: 0, // Uses Bitcoin's coin type
+  network: 'mainnet',
+  apiUrls: [
+    'https://bitnet.outsidethebox.top/api',
+  ],
+  addressType: 'p2wpkh', // SegWit support
+  addressPrefix: {
+    pubKeyHash: 0x19, // (25)
+    scriptHash: 0x16, // (22)
+    bech32: 'bit',
+  },
+  logoUrl: '/chains/bitnet.png',
+  explorerUrl: 'https://bitnet.outsidethebox.top/explorer',
+  explorerAccountPath: '/address/{address}',
+  explorerTxPath: '/tx/{txHash}',
+};
+
+// ============================================================================
 // All UTXO networks for registration
 // ============================================================================
 
@@ -300,4 +442,9 @@ export const BITCOIN_NETWORKS: BitcoinNetworkConfig[] = [
   BITCOINZ_MAINNET,
   DOGECOIN_MAINNET,
   NOSO_MAINNET,
+  WATTX_MAINNET,
+  HTH_MAINNET,
+  FLOPCOIN_MAINNET,
+  TROLLCOIN_MAINNET,
+  BITNET_MAINNET,
 ];
