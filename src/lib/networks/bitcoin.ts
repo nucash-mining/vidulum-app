@@ -300,7 +300,7 @@ export const WATTX_MAINNET: BitcoinNetworkConfig = {
   coinType: 2330, // Custom coin type
   network: 'mainnet',
   apiUrls: [
-    'https://wtx-explorer.wattxchange.app/blockstream-api',
+    'https://api.wattxchange.app/wtx/',
   ],
   addressType: 'p2wpkh', // W... addresses with SegWit support
   addressPrefix: {
@@ -329,7 +329,7 @@ export const HTH_MAINNET: BitcoinNetworkConfig = {
   coinType: 231, // BIP44 coin type for HTH
   network: 'mainnet',
   apiUrls: [
-    'https://hth-explorer.wattxchange.app/blockstream-api',
+    'https://api.wattxchange.app/hth/',
   ],
   addressType: 'p2pkh', // h... addresses
   addressPrefix: {
@@ -357,7 +357,7 @@ export const FLOPCOIN_MAINNET: BitcoinNetworkConfig = {
   coinType: 3, // Uses Dogecoin's coin type (fork)
   network: 'mainnet',
   apiUrls: [
-    'https://flop-explorer.wattxchange.app/blockstream-api',
+    'https://api.wattxchange.app/flop/',
   ],
   addressType: 'p2pkh', // F... addresses
   addressPrefix: {
@@ -413,7 +413,7 @@ export const BITNET_MAINNET: BitcoinNetworkConfig = {
   coinType: 0, // Uses Bitcoin's coin type
   network: 'mainnet',
   apiUrls: [
-    'https://alt-explorer.wattxchange.app/blockstream-api',
+    'https://api.wattxchange.app/bit/',
   ],
   addressType: 'p2wpkh', // SegWit support
   addressPrefix: {
