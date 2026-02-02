@@ -20,7 +20,7 @@ export { BEEZEE_TESTNET, COSMOS_NETWORKS } from './cosmos';
 
 export { BITCOIN_MAINNET, BITCOIN_TESTNET, BITCOIN_NETWORKS } from './bitcoin';
 
-export { EVM_NETWORKS } from './evm';
+export { EVM_NETWORKS, ALTCOINCHAIN_MAINNET } from './evm';
 
 // EVM Registry (auto-generated from ethereum-lists/chains)
 export {

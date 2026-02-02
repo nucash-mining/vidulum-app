@@ -197,6 +197,14 @@ const evmAssets: Record<string, RegistryAsset[]> = {
       decimals: 18,
     },
   ],
+  'alt-mainnet': [
+    {
+      symbol: 'ALT',
+      name: 'Altcoinchain',
+      denom: 'wei',
+      decimals: 18,
+    },
+  ],
 };
 
 // Fallback assets in case chain registry fetch fails
@@ -448,6 +456,7 @@ const tokenColors: Record<string, string> = {
   // EVM
   ETH: '#627EEA',
   BNB: '#F0B90B',
+  ALT: '#00D4AA', // Altcoinchain teal
   // Cosmos chains
   BZE: '#3182CE',
   VDL: '#6366F1',

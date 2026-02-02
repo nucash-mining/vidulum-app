@@ -45,4 +45,19 @@ if (existsSync(iconsDir)) {
   console.log('⚠ No icons directory found');
 }
 
+// Copy chain logos
+const chainsDir = resolve(rootDir, 'public/chains');
+const distChainsDir = resolve(rootDir, 'dist/chains');
+
+if (existsSync(chainsDir)) {
+  if (!existsSync(distChainsDir)) {
+    mkdirSync(distChainsDir, { recursive: true });
+  }
+  const chains = readdirSync(chainsDir);
+  chains.forEach((chain) => {
+    copyFileSync(resolve(chainsDir, chain), resolve(distChainsDir, chain));
+  });
+  console.log(`✓ Copied ${chains.length} chain logo(s)`);
+}
+
 console.log('✅ Static files copied successfully!');
